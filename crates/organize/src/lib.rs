@@ -20,6 +20,7 @@ mod labels;
 mod outline;
 mod pdfx;
 mod prune;
+mod structure;
 pub mod view;
 
 pub use boxes::{BoxSpec, PageBox, page_boxes, set_page_box};

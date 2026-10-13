@@ -79,8 +79,6 @@ pub enum AuditError {
 /// Fraction of a text line's ink (the area of its words), or of its box, that must lie under a
 /// cover to count as hidden (see [`covers`]).
 const COVER_FRACTION: f64 = 0.4;
-/// Fraction of one word a cover must hide for the line's box to count (see [`covers`]).
-const WORD_FRACTION: f64 = 0.5;
 /// WCAG contrast ratio below which the text is unreadable against the cover.
 const COVER_CONTRAST: f64 = 3.0;
 
@@ -138,8 +136,8 @@ fn is_cover(rect: &cover::FilledRect, line: &TextLine) -> bool {
 ///   not the box: an applied redaction leaves a gap that draws nothing (a `TJ` adjustment where
 ///   the text was), and the box still spans it, so a redaction box at the end of a line used to
 ///   cover most of the box and flag the words left beside it.
-/// - 40% of the line's box lies under the cover (the measure used before `ink`) and at least half
-///   of one word still drawn is hidden. This keeps a cover over a short value after a long label
+/// - 40% of the line's box lies under the cover (the measure used before `ink`) and intersects the ink
+///   of a word still drawn. This keeps a cover over a short value after a long label
 ///   flagged, while a cover over the gap alone, with no word under it, stops counting.
 ///
 /// A line without word boxes is measured on its box alone.
@@ -151,13 +149,8 @@ fn covers(cover: &[f64; 4], line: &TextLine) -> bool {
     };
     let inked = fraction(&line.ink) >= COVER_FRACTION;
     let boxed = fraction(std::slice::from_ref(&line.rect)) >= COVER_FRACTION;
-    let word_hidden = || {
-        line.ink.iter().any(|w| {
-            let a = area(w);
-            a > 0.0 && hidden(w) / a >= WORD_FRACTION
-        })
-    };
-    inked || (boxed && (line.ink.is_empty() || word_hidden()))
+    let word_intersects = || line.ink.iter().any(|w| hidden(w) > 0.0);
+    inked || (boxed && (line.ink.is_empty() || word_intersects()))
 }
 
 /// The area of a rectangle, 0 when it is empty or inverted.

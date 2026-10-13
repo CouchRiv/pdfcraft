@@ -279,3 +279,38 @@ fn faux_redaction_over_mirrored_text_is_found() {
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert_eq!(findings[0].covered_text, "Mail the team: someone@example.com");
 }
+
+/// A cover over less than half a value must retain the historical line-box detection.
+#[test]
+fn faux_redaction_over_a_partial_value_after_a_long_label_is_found() {
+    partial_value_is_found(false);
+}
+
+#[test]
+fn faux_redaction_over_a_partial_value_after_a_long_label_on_a_rotated_page_is_found() {
+    partial_value_is_found(true);
+}
+
+fn partial_value_is_found(rotated: bool) {
+    let bytes = one_page(
+        b"BT /F1 11 Tf 72 742 Td [(Social insurance number:) -8000 (123456789)] TJ ET\n0 g\n193 738 111 16 re f\n",
+        if rotated { "/Rotate 90" } else { "" },
+    );
+    let findings = audit_redactions(&open(bytes)).expect("audit must run");
+    assert_eq!(findings.len(), 1, "partial value, rotated={rotated}");
+}
+
+/// Keep the historic detections with several covers, lines and text-spacing states.
+#[test]
+fn faux_redactions_with_multiple_covers_lines_and_spacing_are_found() {
+    let cases: [&[u8]; 4] = [
+        b"BT /F1 11 Tf 72 742 Td (Account: 123456789) Tj ET\n0 g\n72 738 65 16 re f\n140 738 40 16 re f\n",
+        b"BT /F1 11 Tf 72 742 Td (Account: 123456789) Tj 0 -15 Td (Account: 987654321) Tj ET\n0 g\n115 723 100 30 re f\n",
+        b"BT /F1 11 Tf 8 Tc 72 742 Td (Account: 1234) Tj ET\n0 g\n145 738 90 16 re f\n",
+        b"BT /F1 11 Tf 250 Tz 72 742 Td (Account: 1234) Tj ET\n0 g\n100 738 160 16 re f\n",
+    ];
+    for content in cases {
+        let findings = audit_redactions(&open(one_page(content, ""))).expect("audit must run");
+        assert_eq!(findings.len(), 1, "{}: {findings:?}", String::from_utf8_lossy(content));
+    }
+}

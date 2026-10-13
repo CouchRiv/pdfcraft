@@ -17,7 +17,7 @@ A properly applied redaction removes the text, so it never flags. Page backgroun
 shading and highlights don't either: they're painted before the text, or light against it.
 
 A rectangle covers a text line when it hides at least 40% of the area of the words the line
-draws, or at least 40% of the line's box together with at least half of one of its words. The
+draws, or at least 40% of the line's box together with a positive-area intersection with one of its words. The
 gap an applied redaction leaves (a `TJ` adjustment where the text was) is in the line's box but
 holds no word, so a redaction box over it alone does not count.
 

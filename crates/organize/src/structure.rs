@@ -82,6 +82,11 @@ impl Merged {
         let Some(tree_root) = catalog.get(b"StructTreeRoot").map(|r| src.resolve(r)).and_then(|r| r.as_dict().cloned()) else { return };
         let Some(elements) = read_elements(src, &tree_root) else { return };
         let Some(parent_tree) = read_number_tree(src, tree_root.get(b"ParentTree")) else { return };
+        // Map attributes can contain indirect chains unrelated to pages or elements. Bound
+        // those graphs before handing them to the recursive import copier.
+        if [b"RoleMap".as_slice(), b"ClassMap".as_slice()].iter().any(|key| tree_root.get(key).is_some_and(|map| !within_copy_limits(src, map))) {
+            return;
+        }
         let mark_info = catalog.get(b"MarkInfo").map(|m| src.resolve(m)).and_then(|m| m.as_dict().cloned()).unwrap_or_default();
         if matches!(mark_info.get(b"Marked"), Some(Object::Bool(true))) {
             self.tagged += 1;
@@ -115,9 +120,9 @@ impl Merged {
         let element_of: HashMap<ObjRef, ObjRef> = elements.iter().zip(&new).filter_map(|(e, n)| Some((e.obj?, (*n)?))).collect();
         let index_of: HashMap<ObjRef, usize> = elements.iter().enumerate().filter_map(|(i, e)| Some((e.obj?, i))).collect();
 
-        let roles = merge_names(&mut self.role_map, src, tree_root.get(b"RoleMap"));
-        let classes = merge_names(&mut self.class_map, src, tree_root.get(b"ClassMap"));
         let mut copier = Copier::seeded(src, map, pages.clone());
+        let roles = merge_names(&mut self.role_map, src, tree_root.get(b"RoleMap"), &mut copier, dst);
+        let classes = merge_names(&mut self.class_map, src, tree_root.get(b"ClassMap"), &mut copier, dst);
         if let Some(ns) = tree_root.get(b"Namespaces").map(|n| src.resolve(n)).and_then(|n| n.as_array().cloned()) {
             self.namespaces.extend(ns.iter().map(|n| copier.copy_value(dst, n, None)));
         }
@@ -515,13 +520,59 @@ fn read_number_tree(src: &Document, node: Option<&Object>) -> Option<HashMap<i64
     Some(out)
 }
 
+/// Check a map's object graph iteratively before its recursive copy. Cycles are copied once.
+/// Visit children in the copier's order: a global seen-set must not mask its deeper first path.
+fn within_copy_limits(src: &Document, value: &Object) -> bool {
+    let mut pending = vec![(value.clone(), 0usize)];
+    let mut seen = HashSet::new();
+    let mut count = 0usize;
+    while let Some((value, depth)) = pending.pop() {
+        count = count.saturating_add(1);
+        if depth > MAX_DEPTH || count > MAX_ELEMENTS {
+            return false;
+        }
+        match value {
+            Object::Ref(r) => {
+                if seen.insert(r) {
+                    pending.push((src.get(r).as_ref().clone(), depth + 1));
+                }
+            }
+            Object::Array(a) => {
+                if a.len().saturating_add(pending.len()) > MAX_ELEMENTS {
+                    return false;
+                }
+                pending.extend(a.into_iter().rev().map(|v| (v, depth + 1)));
+            }
+            Object::Dict(d) => {
+                if d.len().saturating_add(pending.len()) > MAX_ELEMENTS {
+                    return false;
+                }
+                pending.extend(d.iter().map(|(_, v)| (v.clone(), depth + 1)).collect::<Vec<_>>().into_iter().rev());
+            }
+            Object::Stream(s) => {
+                if s.dict.len().saturating_add(pending.len()) > MAX_ELEMENTS {
+                    return false;
+                }
+                pending.extend(s.dict.iter().map(|(_, v)| (v.clone(), depth + 1)).collect::<Vec<_>>().into_iter().rev());
+            }
+            _ => {}
+        }
+        if pending.len() > MAX_ELEMENTS {
+            return false;
+        }
+    }
+    true
+}
+
 /// Add a source's role map or class map entries to `merged`. Returns the source's names that
 /// had to be renamed because an earlier source maps them to something else.
-fn merge_names(merged: &mut Dict, src: &Document, map: Option<&Object>) -> HashMap<Vec<u8>, Vec<u8>> {
+fn merge_names(merged: &mut Dict, src: &Document, map: Option<&Object>, copier: &mut Copier<'_>, dst: &mut Document) -> HashMap<Vec<u8>, Vec<u8>> {
     let mut renamed = HashMap::new();
     let Some(map) = map.map(|m| src.resolve(m)).and_then(|m| m.as_dict().cloned()) else { return renamed };
     for (name, value) in map.iter() {
-        let value = src.resolve(value).as_ref().clone();
+        // Resolve the entry, then copy its nested references into the result. Source object
+        // numbers are not meaningful in the result (including references inside arrays).
+        let value = copier.copy_value(dst, &src.resolve(value), None);
         match merged.get(name) {
             None => merged.set(name.clone(), value),
             Some(existing) if *existing == value => {}

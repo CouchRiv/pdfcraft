@@ -283,7 +283,7 @@ fn mcid_texts(doc: &Document, page: &Dict) -> HashMap<i64, String> {
                 {
                     let text = out.entry(id).or_default();
                     if text.len() < MAX_TITLE * 4 {
-                        let breaks = ends.get(&id).is_some_and(|end| new_word(&trm, *end, gs.size * gs.scale));
+                        let breaks = ends.get(&id).is_some_and(|end| new_word(&trm, *end, gs.size, gs.scale));
                         if breaks && !text.is_empty() && !text.ends_with(' ') && !glyph.starts_with(' ') {
                             text.push(' ');
                         }
@@ -323,16 +323,17 @@ impl Default for TextState {
 }
 
 /// Does a glyph drawn with text rendering matrix `trm` (text space → user space) start a new word
-/// after a glyph that ended at `end` (user space)? Yes on another line (more than half an em up or
-/// down), more than 0.2 em ahead, or back over more than an em. `advance` is the font size times
-/// the horizontal scale (`Tz`): the em is its absolute value, and "ahead" is the way the glyphs
-/// advance in text space, backwards when the size or `Tz` is negative.
-fn new_word(trm: &Matrix, end: (f64, f64), advance: f64) -> bool {
+/// after a glyph that ended at `end` (user space)? Yes on another line (more than half the absolute
+/// font size up or down), more than 0.2 horizontal em ahead, or back over more than a horizontal em.
+/// The horizontal em is the absolute value of font size times horizontal scale (`Tz`); "ahead" follows
+/// the glyph advance, backwards when the size or `Tz` is negative. `Tz` never scales the vertical threshold.
+fn new_word(trm: &Matrix, end: (f64, f64), font_size: f64, horizontal_scale: f64) -> bool {
+    let advance = font_size * horizontal_scale;
     let em = advance.abs();
     let start = trm.apply(0.0, 0.0);
     let [a, b, c, d, _, _] = trm.0;
     let Some(back) = Matrix([a, b, c, d, 0.0, 0.0]).invert() else { return true };
     let (dx, dy) = back.apply(start.0 - end.0, start.1 - end.1);
     let ahead = if advance < 0.0 { -dx } else { dx };
-    !(ahead.is_finite() && dy.is_finite()) || dy.abs() > em * 0.5 || ahead > em * 0.2 || ahead < -em
+    !(ahead.is_finite() && dy.is_finite()) || dy.abs() > font_size.abs() * 0.5 || ahead > em * 0.2 || ahead < -em
 }

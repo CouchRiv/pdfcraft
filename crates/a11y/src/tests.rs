@@ -774,3 +774,11 @@ fn a_nested_finding_says_itself() {
     // Both wordings are translated, each on its own, and the document's words are left alone.
     assert_eq!(f.said(&|w: &str| format!("«{w}»")), "«Table element on page 3: «rows have between 1 and 2 columns»»");
 }
+
+/// Horizontal stretching must not raise the vertical line-break threshold.
+#[test]
+fn horizontally_scaled_wrapped_heading_keeps_a_space_between_lines() {
+    let doc = heading_page(&["BT /F1 20 Tf 400 Tz 72 700 Td (I) Tj 0 -30 Td (Overview) Tj ET".into()]);
+    let titles: Vec<String> = headings(&doc).into_iter().map(|h| h.title).collect();
+    assert_eq!(titles, ["I Overview"]);
+}

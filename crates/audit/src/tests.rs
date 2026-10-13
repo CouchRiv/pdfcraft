@@ -227,3 +227,30 @@ fn self_drawing_form_fails_the_audit() {
     let result = audit_redactions(&open(b.build()));
     assert!(matches!(result, Err(crate::AuditError::TooDeep)), "{result:?}");
 }
+
+/// An applied redaction leaves the words around it and a `TJ` adjustment over the gap where the
+/// text was, then the redaction box. At the end of a line, the box covers most of the line's box
+/// (which spans the gap) but none of its words: nothing is hidden, so nothing is flagged.
+#[test]
+fn applied_redaction_at_the_end_of_a_line_is_not_flagged() {
+    let content = b"BT /F1 11 Tf 72 742 Td [(Mail the team:) -11354] TJ ET\n0 g\n144.138 739.8 121.814 11 re f\n";
+    let findings = audit_redactions(&open(one_page(content, ""))).expect("audit must run");
+    assert!(findings.is_empty(), "{findings:?}");
+    // The same gap between two words, wider than the words beside it.
+    let content = b"BT /F1 11 Tf 72 742 Td [(Card:) -14000 (ok)] TJ ET\n0 g\n101 739.8 150 11 re f\n";
+    let findings = audit_redactions(&open(one_page(content, ""))).expect("audit must run");
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+/// The control: the same box over text still drawn under it is a faux redaction, at the end of a
+/// line as in the middle of a short one.
+#[test]
+fn faux_redaction_at_the_end_of_a_line_is_found() {
+    let content = b"BT /F1 11 Tf 72 742 Td (Mail the team: someone@example.com) Tj ET\n0 g\n144.138 739.8 121.814 11 re f\n";
+    let findings = audit_redactions(&open(one_page(content, ""))).expect("audit must run");
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].covered_text, "Mail the team: someone@example.com");
+    let content = b"BT /F1 11 Tf 72 742 Td [(Card:) -300 (4111111111111111) -300 (ok)] TJ ET\n0 g\n101 739.8 100 11 re f\n";
+    let findings = audit_redactions(&open(one_page(content, ""))).expect("audit must run");
+    assert_eq!(findings.len(), 1, "{findings:?}");
+}

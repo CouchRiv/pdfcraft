@@ -76,7 +76,7 @@ pub enum AuditError {
     Edit(#[from] pdfcraft_edit::EditError),
 }
 
-/// Fraction of a text line's area that must lie under a cover to count as hidden.
+/// Fraction of a text line's ink (the area of its words) that must lie under a cover to count as hidden.
 const COVER_FRACTION: f64 = 0.4;
 /// WCAG contrast ratio below which the text is unreadable against the cover.
 const COVER_CONTRAST: f64 = 3.0;
@@ -106,7 +106,7 @@ pub fn audit_redactions(doc: &Document) -> Result<Vec<AuditFinding>, AuditError>
         for annot in annots(doc, &page.dict)? {
             let mut covered = String::new();
             for line in &lines {
-                if covers(&annot, &line.rect) {
+                if covers(&annot, line) {
                     if !covered.is_empty() {
                         covered.push(' ');
                     }
@@ -126,23 +126,26 @@ pub fn audit_redactions(doc: &Document) -> Result<Vec<AuditFinding>, AuditError>
 /// make the text unreadable. Light covers (table shading, highlights) over dark text fail the
 /// contrast check and are not flagged.
 fn is_cover(rect: &cover::FilledRect, line: &TextLine) -> bool {
-    rect.pos > line.paint_pos() && covers(&rect.rect, &line.rect) && contrast(line.color, rect.rgb) < COVER_CONTRAST
+    rect.pos > line.paint_pos() && covers(&rect.rect, line) && contrast(line.color, rect.rgb) < COVER_CONTRAST
 }
 
-/// Does `cover` hide a substantial part of `line`?
-fn covers(cover: &[f64; 4], line: &[f64; 4]) -> bool {
-    let ix0 = cover[0].max(line[0]);
-    let iy0 = cover[1].max(line[1]);
-    let ix1 = cover[2].min(line[2]);
-    let iy1 = cover[3].min(line[3]);
-    if ix1 <= ix0 || iy1 <= iy0 {
-        return false;
+/// Does `cover` hide a substantial part of what `line` draws? Measured on the line's words, not
+/// its box: an applied redaction leaves a gap that draws nothing (a `TJ` adjustment where the
+/// text was), and the box still spans it, so a redaction box at the end of a line used to
+/// cover most of the box and flag the words left beside it.
+fn covers(cover: &[f64; 4], line: &TextLine) -> bool {
+    let boxes = if line.ink.is_empty() { std::slice::from_ref(&line.rect) } else { line.ink.as_slice() };
+    let (mut hidden, mut total) = (0.0, 0.0);
+    for b in boxes {
+        total += area(b);
+        hidden += area(&[cover[0].max(b[0]), cover[1].max(b[1]), cover[2].min(b[2]), cover[3].min(b[3])]);
     }
-    let line_area = (line[2] - line[0]).max(0.0) * (line[3] - line[1]).max(0.0);
-    if line_area <= 0.0 {
-        return false;
-    }
-    (ix1 - ix0) * (iy1 - iy0) / line_area >= COVER_FRACTION
+    total > 0.0 && hidden / total >= COVER_FRACTION
+}
+
+/// The area of a rectangle, 0 when it is empty or inverted.
+fn area(r: &[f64; 4]) -> f64 {
+    (r[2] - r[0]).max(0.0) * (r[3] - r[1]).max(0.0)
 }
 
 /// WCAG 2.x relative luminance of an sRGB triple.

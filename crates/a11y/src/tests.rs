@@ -641,7 +641,8 @@ fn heading_page(contents: &[String]) -> Document {
 }
 
 /// Chromium (Skia) places each glyph with its own `Td`: a heading must read as its words, not as
-/// "C h a p t e r T w o", whether the space is drawn or only skipped over.
+/// "C h a p t e r T w o", whether the space is drawn or only skipped over. A heading set with a
+/// negative font size or `Tz` keeps its words too.
 #[test]
 fn headings_drawn_glyph_by_glyph_keep_their_words() {
     let doc = heading_page(&[
@@ -652,9 +653,29 @@ fn headings_drawn_glyph_by_glyph_keep_their_words() {
         glyph_by_tm("Part Five", 18.0, 550.0),
         // Kerning inside a word, then a word space as a TJ adjustment, then a wrapped line.
         "BT /F1 16 Tf 72 450 Td [(Ch) 40 (apter) -350 (Four)] TJ 0 -20 Td (continued) Tj ET".into(),
+        // A negative font size runs the glyphs backwards in text space: alone, in a mirrored
+        // text matrix (upright on the page), with a word space as a TJ adjustment, and the same
+        // with a negative horizontal scale instead (reset after, as Tz outlives the text object).
+        "BT /F1 -20 Tf 72 380 Td (Chapter Six) Tj ET".into(),
+        "BT /F1 -20 Tf -1 0 0 -1 300 330 Tm (Chapter Seven) Tj ET".into(),
+        "BT /F1 -20 Tf 72 280 Td [(Chapter) -300 (Eight)] TJ ET".into(),
+        "BT /F1 20 Tf -100 Tz 300 230 Td [(Chapter) -300 (Nine)] TJ ET 100 Tz".into(),
     ]);
     let titles: Vec<String> = headings(&doc).into_iter().map(|h| h.title).collect();
-    assert_eq!(titles, ["Chapter One", "Chapter Two", "Chapter Three", "Part Five", "Chapter Four continued"]);
+    assert_eq!(
+        titles,
+        [
+            "Chapter One",
+            "Chapter Two",
+            "Chapter Three",
+            "Part Five",
+            "Chapter Four continued",
+            "Chapter Six",
+            "Chapter Seven",
+            "Chapter Eight",
+            "Chapter Nine"
+        ]
+    );
 }
 
 #[test]

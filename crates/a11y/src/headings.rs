@@ -174,7 +174,8 @@ fn sub(doc: &Document, d: &Dict, key: &[u8]) -> Dict {
 /// The text each marked-content id shows on a page (text drawn directly in the page content).
 ///
 /// Word breaks come from where the glyphs are, as on the page: a glyph that starts on another
-/// line, or more than 0.2 em past the end of the previous glyph of the same id, starts a new word.
+/// line, more than 0.2 em past the end of the previous glyph of the same id, or back over more
+/// than an em from it, starts a new word (the em is the font size times |`Tz`|; see [`new_word`]).
 /// Text-positioning operators alone don't break words: producers that place every glyph with its
 /// own `Td` (Chromium) would otherwise read as "C h a p t e r".
 fn mcid_texts(doc: &Document, page: &Dict) -> HashMap<i64, String> {
@@ -282,7 +283,7 @@ fn mcid_texts(doc: &Document, page: &Dict) -> HashMap<i64, String> {
                 {
                     let text = out.entry(id).or_default();
                     if text.len() < MAX_TITLE * 4 {
-                        let breaks = ends.get(&id).is_some_and(|end| new_word(&trm, *end, gs.size * gs.scale.abs()));
+                        let breaks = ends.get(&id).is_some_and(|end| new_word(&trm, *end, gs.size * gs.scale));
                         if breaks && !text.is_empty() && !text.ends_with(' ') && !glyph.starts_with(' ') {
                             text.push(' ');
                         }
@@ -323,12 +324,15 @@ impl Default for TextState {
 
 /// Does a glyph drawn with text rendering matrix `trm` (text space → user space) start a new word
 /// after a glyph that ended at `end` (user space)? Yes on another line (more than half an em up or
-/// down), more than 0.2 em to the right, or back over more than an em; `em` is the font size in
-/// text space.
-fn new_word(trm: &Matrix, end: (f64, f64), em: f64) -> bool {
+/// down), more than 0.2 em ahead, or back over more than an em. `advance` is the font size times
+/// the horizontal scale (`Tz`): the em is its absolute value, and "ahead" is the way the glyphs
+/// advance in text space, backwards when the size or `Tz` is negative.
+fn new_word(trm: &Matrix, end: (f64, f64), advance: f64) -> bool {
+    let em = advance.abs();
     let start = trm.apply(0.0, 0.0);
     let [a, b, c, d, _, _] = trm.0;
     let Some(back) = Matrix([a, b, c, d, 0.0, 0.0]).invert() else { return true };
     let (dx, dy) = back.apply(start.0 - end.0, start.1 - end.1);
-    !(dx.is_finite() && dy.is_finite()) || dy.abs() > em * 0.5 || dx > em * 0.2 || dx < -em
+    let ahead = if advance < 0.0 { -dx } else { dx };
+    !(ahead.is_finite() && dy.is_finite()) || dy.abs() > em * 0.5 || ahead > em * 0.2 || ahead < -em
 }

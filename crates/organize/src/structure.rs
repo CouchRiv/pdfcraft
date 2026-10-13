@@ -520,45 +520,52 @@ fn read_number_tree(src: &Document, node: Option<&Object>) -> Option<HashMap<i64
     Some(out)
 }
 
-/// Check a map's object graph iteratively before its recursive copy. Cycles are copied once.
-/// Visit children in the copier's order: a global seen-set must not mask its deeper first path.
+/// Check each resolved map value, the roots the copier actually copies. Each value gets a
+/// fresh seen-set: the copier's seeded/global map can only shorten these conservative paths.
+/// Traverse children in copier order, and bound the total work across all values.
 fn within_copy_limits(src: &Document, value: &Object) -> bool {
-    let mut pending = vec![(value.clone(), 0usize)];
-    let mut seen = HashSet::new();
+    let Some(map) = src.resolve(value).as_dict().cloned() else { return true };
+    if map.len() > MAX_ELEMENTS {
+        return false;
+    }
     let mut count = 0usize;
-    while let Some((value, depth)) = pending.pop() {
-        count = count.saturating_add(1);
-        if depth > MAX_DEPTH || count > MAX_ELEMENTS {
-            return false;
-        }
-        match value {
-            Object::Ref(r) => {
-                if seen.insert(r) {
-                    pending.push((src.get(r).as_ref().clone(), depth + 1));
-                }
+    for (_, value) in map.iter() {
+        let mut pending = vec![(src.resolve(value).as_ref().clone(), 0usize)];
+        let mut seen = HashSet::new();
+        while let Some((value, depth)) = pending.pop() {
+            count = count.saturating_add(1);
+            if depth > MAX_DEPTH || count > MAX_ELEMENTS {
+                return false;
             }
-            Object::Array(a) => {
-                if a.len().saturating_add(pending.len()) > MAX_ELEMENTS {
-                    return false;
+            match value {
+                Object::Ref(r) => {
+                    if seen.insert(r) {
+                        pending.push((src.get(r).as_ref().clone(), depth + 1));
+                    }
                 }
-                pending.extend(a.into_iter().rev().map(|v| (v, depth + 1)));
-            }
-            Object::Dict(d) => {
-                if d.len().saturating_add(pending.len()) > MAX_ELEMENTS {
-                    return false;
+                Object::Array(a) => {
+                    if a.len().saturating_add(pending.len()) > MAX_ELEMENTS {
+                        return false;
+                    }
+                    pending.extend(a.into_iter().rev().map(|v| (v, depth + 1)));
                 }
-                pending.extend(d.iter().map(|(_, v)| (v.clone(), depth + 1)).collect::<Vec<_>>().into_iter().rev());
-            }
-            Object::Stream(s) => {
-                if s.dict.len().saturating_add(pending.len()) > MAX_ELEMENTS {
-                    return false;
+                Object::Dict(d) => {
+                    if d.len().saturating_add(pending.len()) > MAX_ELEMENTS {
+                        return false;
+                    }
+                    pending.extend(d.iter().map(|(_, v)| (v.clone(), depth + 1)).collect::<Vec<_>>().into_iter().rev());
                 }
-                pending.extend(s.dict.iter().map(|(_, v)| (v.clone(), depth + 1)).collect::<Vec<_>>().into_iter().rev());
+                Object::Stream(s) => {
+                    if s.dict.len().saturating_add(pending.len()) > MAX_ELEMENTS {
+                        return false;
+                    }
+                    pending.extend(s.dict.iter().map(|(_, v)| (v.clone(), depth + 1)).collect::<Vec<_>>().into_iter().rev());
+                }
+                _ => {}
             }
-            _ => {}
-        }
-        if pending.len() > MAX_ELEMENTS {
-            return false;
+            if pending.len() > MAX_ELEMENTS {
+                return false;
+            }
         }
     }
     true

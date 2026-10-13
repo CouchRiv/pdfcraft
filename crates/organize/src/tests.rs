@@ -2716,3 +2716,22 @@ fn combine_bounds_the_first_copy_path_through_shared_class_attributes() {
     assert!(!catalog(&out).contains(b"StructTreeRoot"), "the first copy path exceeds the depth bound even with a shared tail");
     assert_eq!(pages(&out).unwrap().len(), 2);
 }
+
+#[test]
+fn combine_bounds_class_maps_that_reenter_their_own_map() {
+    let mut objs = tagged_objects("en-US", "H1", "h");
+    objs[7] = objs[7].replace("/RoleMap", "/ClassMap 16 0 R /RoleMap");
+    objs.push("<< /Deep [17 0 R] /Tail [137 0 R] >>".into());
+    for next in 18..137 {
+        objs.push(format!("<< /Next {next} 0 R >>"));
+    }
+    objs.push("<< /Next 16 0 R >>".into());
+    for next in 138..257 {
+        objs.push(format!("<< /Next {next} 0 R >>"));
+    }
+    objs.push("<< /O /Layout >>".into());
+    let source = open(build(&objs, "/Root 1 0 R"));
+    let out = full_roundtrip(&combine(&[("A", &source)]).unwrap());
+    assert!(!catalog(&out).contains(b"StructTreeRoot"), "the copy reenters the map and follows its unseen tail past the depth bound");
+    assert_eq!(pages(&out).unwrap().len(), 2);
+}

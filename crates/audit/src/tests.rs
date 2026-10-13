@@ -254,3 +254,28 @@ fn faux_redaction_at_the_end_of_a_line_is_found() {
     let findings = audit_redactions(&open(one_page(content, ""))).expect("audit must run");
     assert_eq!(findings.len(), 1, "{findings:?}");
 }
+
+/// A cover over a short value after a long label hides less than 40% of the line's words, but the
+/// whole of the words it covers, and most of the line's box: still a faux redaction. The value
+/// follows the label in the same `TJ` after a wide gap, or in a second run moved by `Td`.
+#[test]
+fn faux_redaction_over_a_short_value_after_a_long_label_is_found() {
+    let content = b"BT /F1 11 Tf 72 742 Td [(Social insurance number:) -8000 (123 456 789)] TJ ET\n0 g\n200 739.8 150 11 re f\n";
+    let findings = audit_redactions(&open(one_page(content, ""))).expect("audit must run");
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].covered_text, "Social insurance number: 123 456 789");
+    let content = b"BT /F1 11 Tf 72 742 Td (Account:) Tj 70 0 Td (4111) Tj ET\n0 g\n115 739.8 55 11 re f\n";
+    let findings = audit_redactions(&open(one_page(content, ""))).expect("audit must run");
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].covered_text.contains("4111"), "{findings:?}");
+}
+
+/// Text set with a negative font size in a mirrored text matrix runs its glyphs backwards: a
+/// cover over the address it draws is still found.
+#[test]
+fn faux_redaction_over_mirrored_text_is_found() {
+    let content = b"BT /F1 -11 Tf -1 0 0 1 300 742 Tm (Mail the team: someone@example.com) Tj ET\n0 g\n365 733 130 14 re f\n";
+    let findings = audit_redactions(&open(one_page(content, ""))).expect("audit must run");
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].covered_text, "Mail the team: someone@example.com");
+}

@@ -76,8 +76,11 @@ pub enum AuditError {
     Edit(#[from] pdfcraft_edit::EditError),
 }
 
-/// Fraction of a text line's ink (the area of its words) that must lie under a cover to count as hidden.
+/// Fraction of a text line's ink (the area of its words), or of its box, that must lie under a
+/// cover to count as hidden (see [`covers`]).
 const COVER_FRACTION: f64 = 0.4;
+/// Fraction of one word a cover must hide for the line's box to count (see [`covers`]).
+const WORD_FRACTION: f64 = 0.5;
 /// WCAG contrast ratio below which the text is unreadable against the cover.
 const COVER_CONTRAST: f64 = 3.0;
 
@@ -129,18 +132,32 @@ fn is_cover(rect: &cover::FilledRect, line: &TextLine) -> bool {
     rect.pos > line.paint_pos() && covers(&rect.rect, line) && contrast(line.color, rect.rgb) < COVER_CONTRAST
 }
 
-/// Does `cover` hide a substantial part of what `line` draws? Measured on the line's words, not
-/// its box: an applied redaction leaves a gap that draws nothing (a `TJ` adjustment where the
-/// text was), and the box still spans it, so a redaction box at the end of a line used to
-/// cover most of the box and flag the words left beside it.
+/// Does `cover` hide a substantial part of what `line` draws? Two ways, either is enough:
+///
+/// - 40% of the area of the line's words (its `ink`) lies under the cover. Measured on the words,
+///   not the box: an applied redaction leaves a gap that draws nothing (a `TJ` adjustment where
+///   the text was), and the box still spans it, so a redaction box at the end of a line used to
+///   cover most of the box and flag the words left beside it.
+/// - 40% of the line's box lies under the cover (the measure used before `ink`) and at least half
+///   of one word still drawn is hidden. This keeps a cover over a short value after a long label
+///   flagged, while a cover over the gap alone, with no word under it, stops counting.
+///
+/// A line without word boxes is measured on its box alone.
 fn covers(cover: &[f64; 4], line: &TextLine) -> bool {
-    let boxes = if line.ink.is_empty() { std::slice::from_ref(&line.rect) } else { line.ink.as_slice() };
-    let (mut hidden, mut total) = (0.0, 0.0);
-    for b in boxes {
-        total += area(b);
-        hidden += area(&[cover[0].max(b[0]), cover[1].max(b[1]), cover[2].min(b[2]), cover[3].min(b[3])]);
-    }
-    total > 0.0 && hidden / total >= COVER_FRACTION
+    let hidden = |b: &[f64; 4]| area(&[cover[0].max(b[0]), cover[1].max(b[1]), cover[2].min(b[2]), cover[3].min(b[3])]);
+    let fraction = |boxes: &[[f64; 4]]| {
+        let total: f64 = boxes.iter().map(area).sum();
+        if total > 0.0 { boxes.iter().map(hidden).sum::<f64>() / total } else { 0.0 }
+    };
+    let inked = fraction(&line.ink) >= COVER_FRACTION;
+    let boxed = fraction(std::slice::from_ref(&line.rect)) >= COVER_FRACTION;
+    let word_hidden = || {
+        line.ink.iter().any(|w| {
+            let a = area(w);
+            a > 0.0 && hidden(w) / a >= WORD_FRACTION
+        })
+    };
+    inked || (boxed && (line.ink.is_empty() || word_hidden()))
 }
 
 /// The area of a rectangle, 0 when it is empty or inverted.

@@ -685,9 +685,12 @@ fn interpret(
                                 }
                                 if !blank {
                                     let ink_end = x_text + m.width(code) * ts.size * ts.scale;
+                                    // A negative font size or `Tz` runs the glyphs backwards:
+                                    // the word is the union of its glyphs, whichever way they go.
+                                    let (lo, hi) = (x_text.min(ink_end), x_text.max(ink_end));
                                     match words.last_mut() {
-                                        Some(word) if in_word => word.1 = word.1.max(ink_end),
-                                        _ => words.push((x_text, ink_end)),
+                                        Some(word) if in_word => *word = (word.0.min(lo), word.1.max(hi)),
+                                        _ => words.push((lo, hi)),
                                     }
                                 }
                                 in_word = !blank;
@@ -702,8 +705,9 @@ fn interpret(
                                 if dx > ts.size * 0.2 && !text.ends_with(' ') {
                                     text.push(' ');
                                 }
-                                // Kerning keeps a word together; a jump either way ends it.
-                                if dx.abs() > ts.size * 0.2 {
+                                // Kerning keeps a word together; a jump either way of more
+                                // than 0.2 em ends it (whatever the sign of the size or `Tz`).
+                                if dx.abs() > (ts.size * ts.scale).abs() * 0.2 {
                                     in_word = false;
                                 }
                                 x_text += dx;

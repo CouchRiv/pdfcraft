@@ -51,10 +51,22 @@ fn placement(doc: &Document, form: &Dict, rect: [f64; 4]) -> Option<[f64; 6]> {
     Some([sx, 0.0, 0.0, sy, rect[0] - x0 * sx, rect[1] - y0 * sy])
 }
 
+/// What [`flatten_with`] flattens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FlattenOptions {
+    /// Every comment.
+    pub comments: bool,
+    /// Every form field.
+    pub fields: bool,
+    /// With `fields`: leave signature fields (signed or not) as they are, so a form can be filled,
+    /// flattened, and then signed in the signature field it was prepared with.
+    pub keep_signature_fields: bool,
+}
+
 #[derive(Clone, Copy)]
 enum Which {
     /// Every comment and/or every form field.
-    Comments { comments: bool, fields: bool },
+    Comments(FlattenOptions),
     /// Fill & Sign text, marks and signatures only.
     FillSign,
 }
@@ -62,12 +74,29 @@ enum Which {
 fn selected(doc: &Document, d: &Dict, which: Which) -> bool {
     let subtype = d.name(b"Subtype").unwrap_or_default();
     match which {
-        Which::Comments { comments, fields } => {
+        Which::Comments(o) => {
             let widget = subtype == b"Widget";
-            !matches!(subtype, b"Link" | b"Popup") && (!widget || fields) && (widget || comments)
+            !matches!(subtype, b"Link" | b"Popup")
+                && (!widget || o.fields)
+                && (widget || o.comments)
+                && !(widget && o.keep_signature_fields && is_signature_field(doc, d))
         }
         Which::FillSign => !matches!(subtype, b"Link" | b"Popup" | b"Widget") && pdfcraft_annot::is_fill_sign(doc, d),
     }
+}
+
+/// Whether a widget belongs to a signature field: its own `/FT`, or the one it inherits from its
+/// parent fields (§12.7.4.1), followed a bounded number of levels.
+fn is_signature_field(doc: &Document, widget: &Dict) -> bool {
+    let mut node = widget.clone();
+    for _ in 0..64 {
+        if let Some(ft) = node.get(b"FT") {
+            return doc.resolve(ft).as_name() == Some(b"Sig");
+        }
+        let Some(parent) = node.get(b"Parent").and_then(|p| doc.resolve(p).as_dict().cloned()) else { return false };
+        node = parent;
+    }
+    false
 }
 
 /// An XObject name that is not already on the page, so a later flatten cannot replace `PCFl0`.
@@ -87,7 +116,13 @@ fn xobject_name(existing: &Dict, pending: &Dict, n: &mut u32) -> String {
 /// Flatten comments and/or form fields on `pages`. Returns how many annotations were merged
 /// into page content.
 pub fn flatten(doc: &mut Document, pages: &[usize], comments: bool, fields: bool) -> Result<usize, EditError> {
-    flatten_which(doc, pages, Which::Comments { comments, fields })
+    flatten_with(doc, pages, FlattenOptions { comments, fields, keep_signature_fields: false })
+}
+
+/// [`flatten`] with the choices of [`FlattenOptions`]. Returns how many annotations were merged
+/// into page content.
+pub fn flatten_with(doc: &mut Document, pages: &[usize], options: FlattenOptions) -> Result<usize, EditError> {
+    flatten_which(doc, pages, Which::Comments(options))
 }
 
 /// Bake Fill & Sign text, marks and signatures into `pages` and remove those annotations.

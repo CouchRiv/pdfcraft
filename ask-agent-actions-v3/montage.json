@@ -1,0 +1,91 @@
+{
+  "source": "real egui application captures with deterministic local agent replies; no external LLM",
+  "crop": [
+    600,
+    160,
+    2560,
+    1600
+  ],
+  "sequence": [
+    {
+      "frame": "01-select",
+      "seconds": 2,
+      "caption": "Select the page to review"
+    },
+    {
+      "frame": "02-open",
+      "seconds": 1.3,
+      "caption": "Open Ask Agent"
+    },
+    {
+      "frame": "02-picker",
+      "seconds": 2.5,
+      "caption": "Choose Claude Code or Codex"
+    },
+    {
+      "frame": "02-picked",
+      "seconds": 1,
+      "caption": "Claude Code selected"
+    },
+    {
+      "frame": "03-actions",
+      "seconds": 3,
+      "caption": "Choose a PDF action"
+    },
+    {
+      "frame": "03a-forms",
+      "seconds": 2,
+      "caption": "Explore form preparation"
+    },
+    {
+      "frame": "03b-redaction",
+      "seconds": 2,
+      "caption": "Explore redaction review"
+    },
+    {
+      "frame": "03-prefilled",
+      "seconds": 3,
+      "caption": "Review the instruction, then Send"
+    },
+    {
+      "frame": "04-working",
+      "seconds": 2,
+      "caption": "The agent works on the page"
+    },
+    {
+      "frame": "05-edited",
+      "seconds": 2.5,
+      "caption": "The agent adds real highlights"
+    },
+    {
+      "frame": "06-answer",
+      "seconds": 3,
+      "caption": "Read the summary; Keep or Undo"
+    },
+    {
+      "frame": "10-kept",
+      "seconds": 4,
+      "caption": "Keep: highlights and signed comments remain"
+    },
+    {
+      "frame": "06-answer",
+      "seconds": 2,
+      "caption": "Alternative: refine before deciding"
+    },
+    {
+      "frame": "07-followup-draft",
+      "seconds": 2.5,
+      "caption": "Reply in the same thread"
+    },
+    {
+      "frame": "08-followup-answer",
+      "seconds": 3,
+      "caption": "Review the follow-up, then choose Undo"
+    },
+    {
+      "frame": "09-undone",
+      "seconds": 3.5,
+      "caption": "Undo removes the highlights and agent notes"
+    }
+  ]
+}

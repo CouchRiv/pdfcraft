@@ -1,0 +1,16 @@
+01-select 2 Select the page to review
+02-open 1.3 Open Ask Agent
+02-picker 2.5 Choose Claude Code or Codex
+02-picked 1 Claude Code selected
+03-type0 0.4 Describe the changes
+03-type1 0.4 Describe the changes
+03-type2 0.4 Describe the changes
+03-type3 2.5 Describe the changes
+04-working 2 The agent works on the page
+05-edited 2.5 The agent adds real highlights
+06-answer 3 Read the summary; Keep or Undo
+11-kept 4 Keep: highlights and signed comments remain
+06-answer 2 Alternative: refine before deciding
+07-followup-draft 2.5 Reply in the same thread
+08-followup-answer 3 Review the follow-up, then choose Undo
+09-undone 3.5 Undo removes the highlights and agent notes

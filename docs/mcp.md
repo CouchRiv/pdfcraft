@@ -148,4 +148,6 @@ sent extra keys before get an error now.
   minimized or locked window may draw no frames: screenshots then fail after 5 s, and
   requests can wait until it is drawn again.
 
-Ask Agent (`wait_for_request`, `reply_to_request`) is not part of this bridge.
+Ask Agent exposes `wait_for_request` and `reply_to_request` through this bridge.
+Requests are session-only, connection-owned, reply-only for now, and never silently run
+in a separate headless document.

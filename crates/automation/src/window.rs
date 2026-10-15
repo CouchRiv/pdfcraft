@@ -35,7 +35,7 @@ pub trait Window {
 /// Run the table tool `name` on the window's `session` (see [`Automation::run_on`]), for the
 /// control method [`TOOL_METHOD`]. Refused first: what [`refused_in_window`] lists.
 pub fn call_for_window(session: &mut Session, root: Option<&Path>, name: &str, args: &Value) -> Result<Value, String> {
-    if let Some(why) = refused_in_window(name, args) {
+    if let Some(why) = refused_relay(name, args) {
         return Err(why);
     }
     Automation::run_on(session, root, name, args).map(to_wire).map_err(|e| e.to_string())
@@ -55,7 +55,7 @@ pub fn call_for_window(session: &mut Session, root: Option<&Path>, name: &str, a
 pub fn refused_in_window(name: &str, args: &Value) -> Option<String> {
     let signing = || {
         Some(format!(
-            "{name}: signing in the PdfCraft window is for the person to do, not an agent. An agent can prepare the document (add a signature field with form_add_field, type text or a date with fill_sign_add); the person then signs in the window (Fill & Sign ▸ Sign, or Use a certificate) with their own ID, which never goes through the control channel"
+            "HUMAN_SIGNATURE_REQUIRED: {name}: signing in the PdfCraft window is for the person to do, not an agent. An agent can prepare the document (add a signature field with form_add_field, type text or a date with fill_sign_add); the person then signs in the window (Fill & Sign ▸ Sign, or Use a certificate) with their own ID, which never goes through the control channel"
         ))
     };
     match name {
@@ -74,19 +74,144 @@ pub fn refused_in_window(name: &str, args: &Value) -> Option<String> {
 /// a direct call or command wrapper never leave the MCP process. The window independently
 /// enforces the same policy at every dispatch as a second boundary.
 pub(crate) fn refused_relay(name: &str, args: &Value) -> Option<String> {
-    if let Some(why) = refused_in_window(name, args) {
-        return Some(why);
+    fn visit(name: &str, args: &Value, depth: usize) -> Option<String> {
+        if depth > 16 {
+            return Some("INVALID_PARAMS: nested command depth exceeds 16".into());
+        }
+        if let Some(why) = refused_in_window(name, args) {
+            return Some(why);
+        }
+        let command = |step: &Value| {
+            let id = step.get("id").and_then(Value::as_str)?;
+            let inner = crate::tools::tool_for_command(id)?;
+            visit(inner, step.get("params").unwrap_or(&Value::Null), depth + 1)
+        };
+        match name {
+            "command_run" => command(args),
+            "command_batch" => args.get("steps").and_then(Value::as_array).and_then(|steps| steps.iter().find_map(command)),
+            "tool_call" => {
+                args.get("name").and_then(Value::as_str).and_then(|inner| visit(inner, args.get("arguments").unwrap_or(&Value::Null), depth + 1))
+            }
+            _ => None,
+        }
     }
-    let command = |step: &Value| {
-        let id = step.get("id").and_then(Value::as_str)?;
-        let inner = crate::tools::tool_for_command(id)?;
-        refused_in_window(inner, step.get("params").unwrap_or(&Value::Null))
+    visit(name, args, 0)
+}
+
+/// Refuse forbidden native operations encoded in a proposal before it crosses the channel.
+/// Ordinary prose and JSON without native action names remain proposal data.
+pub(crate) fn refused_proposal(proposal: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(proposal).ok()?;
+    let operation = |action: &Value| {
+        let name = action.get("name").and_then(Value::as_str)?;
+        refused_relay(name, action.get("arguments").unwrap_or(&Value::Null))
     };
-    match name {
-        "command_run" => command(args),
-        "command_batch" => args.get("steps").and_then(Value::as_array).and_then(|steps| steps.iter().find_map(command)),
+    match &value {
+        Value::Array(actions) => actions.iter().find_map(operation),
+        Value::Object(_) => operation(&value),
         _ => None,
     }
+}
+
+/// Common Ask Agent tools, available in normal and compact MCP discovery.
+pub(crate) fn agent_tools() -> Vec<Value> {
+    vec![
+        json!({
+            "name":"wait_for_request", "title":"Wait for an Ask Agent request",
+            "description":"Claim the oldest eligible request from the connected application. Requires --connect FILE.",
+            "inputSchema":{"type":"object","properties":{
+                "timeout_s":{"type":"number","minimum":0,"default":30,"description":"Seconds to wait; capped at 60."},
+                "agent":{"type":"string","description":"Optional display name; otherwise use the initialized MCP client name."}
+            },"required":[],"additionalProperties":false},
+            "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}
+        }),
+        json!({
+            "name":"reply_to_request", "title":"Reply to an Ask Agent request",
+            "description":"Update a claimed request. Proposals remain unapplied until the person reviews them.",
+            "inputSchema":{"type":"object","properties":{
+                "id":{"type":"integer","minimum":0,"maximum":9007199254740991u64},
+                "text":{"type":"string","maxLength":4000},"proposal":{"type":"string"},
+                "format":{"type":"string","enum":["text","markdown"],"default":"text"},
+                "comment":{"type":"string","maxLength":2000},"error":{"type":"string","minLength":1},
+                "done":{"type":"boolean","default":true}
+            },"required":["id"],"anyOf":[{"required":["text"]},{"required":["proposal"]},{"required":["error"]}],"additionalProperties":false},
+            "annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}
+        }),
+    ]
+}
+
+/// Validate common MCP arguments and translate seconds into control-channel milliseconds.
+pub(crate) fn agent_params(name: &str, args: &Value, client_name: Option<&str>) -> Result<(&'static str, Value), String> {
+    let invalid = |reason: &str| format!("INVALID_PARAMS: {name}: {reason}");
+    let obj = args.as_object().ok_or_else(|| invalid("arguments must be an object"))?;
+    let allowed: &[&str] =
+        if name == "wait_for_request" { &["timeout_s", "agent"] } else { &["id", "text", "proposal", "format", "comment", "error", "done"] };
+    if let Some(key) = obj.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(invalid(&format!("unknown argument {key:?} (expected: {})", allowed.join(", "))));
+    }
+    if name == "wait_for_request" {
+        let seconds = match obj.get("timeout_s") {
+            None => 30.0,
+            Some(value) => {
+                value.as_f64().filter(|n| n.is_finite() && *n >= 0.0).ok_or_else(|| invalid("timeout_s must be a finite nonnegative number"))?
+            }
+        };
+        let agent = match obj.get("agent") {
+            None => client_name,
+            Some(value) => Some(value.as_str().ok_or_else(|| invalid("agent must be a string"))?),
+        };
+        let mut params = json!({"timeoutMs": (seconds.min(60.0) * 1000.0).floor() as u64});
+        if let Some(agent) = agent {
+            params["agent"] = json!(agent);
+        }
+        return Ok(("agent.listen", params));
+    }
+    obj.get("id")
+        .and_then(Value::as_u64)
+        .filter(|id| *id <= 9_007_199_254_740_991)
+        .ok_or_else(|| invalid("id must be a safe nonnegative integer"))?;
+    for (key, limit) in [("text", 4000), ("proposal", usize::MAX), ("comment", 2000), ("error", usize::MAX), ("format", usize::MAX)] {
+        if let Some(value) = obj.get(key) {
+            let text = value.as_str().ok_or_else(|| invalid("text, proposal, format, comment and error must be strings"))?;
+            if text.chars().count() > limit {
+                return Err(invalid("text or comment exceeds its character limit"));
+            }
+            if key == "proposal" && text.len() > 200_000 {
+                return Err(invalid("proposal exceeds 200000 UTF-8 bytes"));
+            }
+        }
+    }
+    if !["text", "proposal", "error"].iter().any(|key| obj.contains_key(*key)) {
+        return Err(invalid("text, proposal or error is required"));
+    }
+    let done = match obj.get("done") {
+        None => true,
+        Some(value) => value.as_bool().ok_or_else(|| invalid("done must be a boolean"))?,
+    };
+    if let Some(error) = obj.get("error").and_then(Value::as_str)
+        && (error.trim().is_empty() || obj.contains_key("proposal") || obj.contains_key("comment") || !done)
+    {
+        return Err(invalid("error must be nonblank and cannot accompany proposal, comment or done:false"));
+    }
+    if obj.contains_key("comment") && !done {
+        return Err(invalid("comment requires successful done:true"));
+    }
+    if let Some(format) = obj.get("format").and_then(Value::as_str)
+        && !matches!(format, "text" | "markdown")
+    {
+        return Err(invalid("unsupported proposal format"));
+    }
+    if let Some(proposal) = obj.get("proposal").and_then(Value::as_str)
+        && let Some(reason) = refused_proposal(proposal)
+    {
+        return Err(reason);
+    }
+    let mut params = args.clone();
+    params["done"] = json!(done);
+    if !obj.contains_key("format") {
+        params["format"] = json!("text");
+    }
+    Ok(("agent.reply", params))
 }
 
 /// A tool's result as the control channel carries it: `{"content": [...]}`, each piece
@@ -271,9 +396,8 @@ mod tests {
         for step in [signature, json!({"id":"file.close", "params":{"doc":doc,"discard_changes":true}})] {
             let e = call_for_window(&mut s, None, "command_run", &step).unwrap_err();
             assert!(e.contains("person"), "{e}");
-            let r = call_for_window(&mut s, None, "command_batch", &json!({"steps":[step],"stop_on_error":false})).unwrap();
-            assert_eq!(r["content"][0]["value"]["failed"], 1, "{r}");
-            assert!(r["content"][0]["value"]["results"][0]["error"].as_str().unwrap().contains("person"), "{r}");
+            let e = call_for_window(&mut s, None, "command_batch", &json!({"steps":[step],"stop_on_error":false})).unwrap_err();
+            assert!(e.contains("person"), "{e}");
         }
         for name in ["sign_list", "sign_keychain_ids", "sign_windows_ids", "sign_unknown", "redact_apply", "comment_image_preview"] {
             assert!(call_for_window(&mut s, None, name, &json!({"doc":doc})).is_err(), "{name}");

@@ -146,6 +146,13 @@ impl Connection {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         let Some((lines, write)) = self.stream.as_mut() else { return Err(Failure::Transport("not connected".into())) };
+        let timeout = if method == "agent.listen" {
+            let milliseconds = params["timeoutMs"].as_f64().filter(|n| n.is_finite() && *n >= 0.).unwrap_or(30000.).floor().min(60000.) as u64;
+            self.read_timeout.max(Duration::from_millis(milliseconds.saturating_add(5000)))
+        } else {
+            self.read_timeout
+        };
+        write.set_read_timeout(Some(timeout)).map_err(|e| Failure::Transport(e.to_string()))?;
         writeln!(write, "{}", json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
             .and_then(|()| write.flush())
             .map_err(|e| Failure::Transport(e.to_string()))?;
@@ -167,7 +174,15 @@ impl Connection {
             return Err(Failure::Transport("the app sent neither result nor error".into()));
         }
         match reply.get("error") {
-            Some(e) => Err(Failure::Refused(e["message"].as_str().unwrap_or("error").to_string())),
+            Some(e) => {
+                let message = e.as_str().or_else(|| e["message"].as_str()).unwrap_or("error");
+                let code = reply["errorCode"].as_str().or_else(|| e["data"]["errorCode"].as_str());
+                let message = match code {
+                    Some(code) if !message.starts_with(&format!("{code}:")) => format!("{code}: {message}"),
+                    _ => message.to_string(),
+                };
+                Err(Failure::Refused(message))
+            }
             None => Ok(reply["result"].clone()),
         }
     }

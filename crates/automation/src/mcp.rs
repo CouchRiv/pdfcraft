@@ -77,11 +77,14 @@ pub struct McpServer {
     compact: bool,
     /// Connected mode: tools go to this window. The automation then only holds the root.
     window: Option<Box<dyn Window>>,
+    client_name: Option<String>,
+    /// Latest claim is tagged automatically; the application still validates connection ownership.
+    claimed_request: Option<u64>,
 }
 
 impl McpServer {
     pub fn new(automation: Automation) -> Self {
-        Self { automation, compact: false, window: None }
+        Self { automation, compact: false, window: None, client_name: None, claimed_request: None }
     }
 
     /// Connected mode: run every tool and serve every resource in `window` (the open app, on
@@ -147,6 +150,7 @@ impl McpServer {
     fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
         match method {
             "initialize" => {
+                self.client_name = params.get("clientInfo").and_then(|info| info.get("name")).and_then(Value::as_str).map(str::to_owned);
                 let asked = params.get("protocolVersion").and_then(Value::as_str);
                 let version = asked.filter(|v| PROTOCOL_VERSIONS.contains(v)).unwrap_or(PROTOCOL_VERSIONS[0]);
                 Ok(json!({
@@ -164,7 +168,7 @@ impl McpServer {
             "tools/list" => Ok(json!({ "tools": self.tool_list() })),
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).ok_or((INVALID_PARAMS, "tools/call needs a tool name".to_string()))?;
-                let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+                let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
                 if self.compact && name == TOOL_SEARCH {
                     check_keys(name, &args, &["query", "category", "name"]).map_err(|e| (INVALID_PARAMS, e))?;
                     return Ok(match search_tools(&args) {
@@ -176,8 +180,11 @@ impl McpServer {
                     check_keys(name, &args, &["name", "arguments"]).map_err(|e| (INVALID_PARAMS, e))?;
                     let (inner, inner_args) = match unwrap_tool_call(&args) {
                         Ok(pair) => pair,
-                        Err(message) => return Ok(tool_error(&message)),
+                        Err(message) => return Err((INVALID_PARAMS, message)),
                     };
+                    if matches!(inner.as_str(), "wait_for_request" | "reply_to_request") {
+                        return self.agent_call(&inner, &inner_args);
+                    }
                     if self.window.is_some() && window::ui_method(&inner).is_some() {
                         return Ok(self.ui_call(&inner, &inner_args));
                     }
@@ -186,6 +193,9 @@ impl McpServer {
                         Err(ToolError::UnknownTool(t)) => tool_error(&format!("unknown tool {t:?}; use tool_search to find the right name")),
                         Err(e) => tool_error(&e.to_string()),
                     });
+                }
+                if matches!(name, "wait_for_request" | "reply_to_request") {
+                    return self.agent_call(name, &args);
                 }
                 if self.window.is_some()
                     && let Some((_, keys)) = window::ui_method(name)
@@ -232,6 +242,7 @@ impl McpServer {
         } else {
             all.iter().map(tool_json).collect()
         };
+        out.extend(window::agent_tools());
         if self.window.is_some() {
             out.extend(window::ui_tools());
         }
@@ -249,6 +260,9 @@ impl McpServer {
             return Err(ToolError::UnknownTool(name.into()));
         }
         let mut params = json!({ "name": name, "arguments": args });
+        if let Some(request_id) = self.claimed_request {
+            params["requestId"] = json!(request_id);
+        }
         if let Some(root) = self.automation.root() {
             let root = root
                 .to_str()
@@ -257,6 +271,28 @@ impl McpServer {
         }
         let v = w.call(window::TOOL_METHOD, params).map_err(ToolError::Failed)?;
         window::from_wire(&v).map_err(ToolError::Failed)
+    }
+
+    fn agent_call(&mut self, name: &str, args: &Value) -> Result<Value, (i64, String)> {
+        let (method, params) = match window::agent_params(name, args, self.client_name.as_deref()) {
+            Ok(call) => call,
+            Err(reason) if reason.starts_with("INVALID_PARAMS:") => return Err((INVALID_PARAMS, reason)),
+            Err(reason) => return Ok(tool_error(&reason)),
+        };
+        let Some(window) = self.window.as_mut() else {
+            return Ok(tool_error(
+                "NO_UI: Ask Agent requires an open PdfCraft window launched with --control FILE; start this MCP server with --connect FILE",
+            ));
+        };
+        Ok(match window.call(method, params) {
+            Ok(value) => {
+                if method == "agent.listen" {
+                    self.claimed_request = value.get("id").and_then(Value::as_u64).filter(|id| *id <= 9_007_199_254_740_991);
+                }
+                call_result(vec![Content::Json(value)])
+            }
+            Err(reason) => tool_error(&reason),
+        })
     }
 
     /// Relay `ui_*` tool `name` to the window's `ui.*` method; a screenshot comes back as an image.
@@ -366,6 +402,11 @@ fn search_tools(args: &Value) -> Result<Value, String> {
     let (query, category, name) = (text("query")?, text("category")?, text("name")?);
     let all = crate::tools();
     if let Some(name) = name {
+        if let Some(tool) = window::agent_tools().into_iter().find(|tool| tool["name"].as_str() == Some(name)) {
+            return Ok(
+                json!({"tool":{"name":name,"title":tool["title"],"category":category_of(name),"description":tool["description"],"read_only":tool["annotations"]["readOnlyHint"],"destructive":false,"input_schema":tool["inputSchema"]}}),
+            );
+        }
         let t =
             all.iter().find(|t| t.name == name).ok_or_else(|| format!("unknown tool {name:?}; call {TOOL_SEARCH} without name to list the tools"))?;
         return Ok(json!({ "tool": {
@@ -376,9 +417,10 @@ fn search_tools(args: &Value) -> Result<Value, String> {
     let category = category.map(|c| c.trim_end_matches('_').to_lowercase()).filter(|c| !c.is_empty());
     let words: Vec<String> = query.map(|q| q.to_lowercase().split_whitespace().map(str::to_owned).collect()).unwrap_or_default();
     let mut categories: Vec<&str> = all.iter().map(|t| category_of(t.name)).collect();
+    categories.extend(["wait", "reply"]);
     categories.sort_unstable();
     categories.dedup();
-    let found: Vec<Value> = all
+    let mut found: Vec<Value> = all
         .iter()
         .filter(|t| category.as_deref().is_none_or(|c| category_of(t.name) == c))
         .filter(|t| {
@@ -387,6 +429,14 @@ fn search_tools(args: &Value) -> Result<Value, String> {
         })
         .map(|t| json!({ "name": t.name, "category": category_of(t.name), "description": first_sentence(t.description), "read_only": t.read_only }))
         .collect();
+    for tool in window::agent_tools() {
+        let Some(name) = tool["name"].as_str() else { continue };
+        let description = tool["description"].as_str().unwrap_or_default();
+        let haystack = format!("{name} {} {description}", tool["title"]).to_lowercase();
+        if category.as_deref().is_none_or(|c| category_of(name) == c) && words.iter().all(|word| haystack.contains(word.as_str())) {
+            found.push(json!({"name":name,"category":category_of(name),"description":first_sentence(description),"read_only":tool["annotations"]["readOnlyHint"]}));
+        }
+    }
     Ok(json!({ "count": found.len(), "tools": found, "categories": categories }))
 }
 
@@ -402,7 +452,8 @@ fn unwrap_tool_call(args: &Value) -> Result<(String, Value), String> {
         return Err(format!("{TOOL_SEARCH} and {TOOL_CALL} are called directly, not through {TOOL_CALL}"));
     }
     let inner = match obj.get("arguments") {
-        None | Some(Value::Null) => Value::Null,
+        None => json!({}),
+        Some(Value::Null) => Value::Null,
         Some(v @ Value::Object(_)) => v.clone(),
         Some(_) => return Err(format!("{TOOL_CALL}: arguments must be an object")),
     };
@@ -429,7 +480,13 @@ fn tool_content(name: &str, content: Vec<Content>) -> Value {
 
 /// A failed tool call, as the agent should read it.
 fn tool_error(message: &str) -> Value {
-    json!({ "content": [{ "type": "text", "text": message }], "isError": true })
+    let (code, reason) = message
+        .split_once(':')
+        .filter(|(code, _)| !code.is_empty() && code.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_'))
+        .map(|(code, reason)| (code, reason.trim_start()))
+        .unwrap_or(("INVALID_PARAMS", message));
+    let failure = json!({"errorCode":code,"error":reason});
+    json!({ "content": [{ "type": "text", "text": failure.to_string() }], "isError": true })
 }
 
 /// The resource behind a `pdfcraft://` URI.
@@ -597,6 +654,20 @@ mod tests {
     use super::{Resource, first_sentence, parse_uri};
 
     #[test]
+    fn domain_errors_are_serialized_as_common_json() {
+        let result = super::tool_error("NOT_OWNER: another connection owns this request");
+        assert_eq!(result["isError"], true);
+        let failure: serde_json::Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(failure, serde_json::json!({"errorCode":"NOT_OWNER","error":"another connection owns this request"}));
+        let generic = super::tool_error("synthetic failure");
+        let failure: serde_json::Value = serde_json::from_str(generic["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(failure, serde_json::json!({"errorCode":"INVALID_PARAMS","error":"synthetic failure"}));
+        let tools = crate::window::agent_tools();
+        assert_eq!(tools[0]["annotations"]["readOnlyHint"], true);
+        assert_eq!(tools[1]["annotations"]["readOnlyHint"], false);
+    }
+
+    #[test]
     fn conventions_panic_is_a_tool_error() {
         let r = super::guarded_tool(|| panic!("synthetic tool failure")).unwrap();
         assert_eq!(r["isError"], true);
@@ -634,6 +705,9 @@ mod tests {
                     Ok(serde_json::json!({ "png_base64": base64::engine::general_purpose::STANDARD.encode(b"PNG"), "width": 2, "height": 3 }))
                 }
                 ("ui.state", _) => Ok(serde_json::json!({ "documents": [] })),
+                ("agent.listen", _) if params["agent"] == "synthetic claimant" => Ok(serde_json::json!({"id":42,"status":"working"})),
+                ("agent.listen", _) => Ok(serde_json::json!({"none":true})),
+                ("agent.reply", _) => Ok(serde_json::json!({"id":params["id"],"shown":true,"done":params["done"],"status":"ready"})),
                 _ => Err("the PdfCraft window is not running".into()),
             }
         }
@@ -703,7 +777,7 @@ mod tests {
         ] {
             let r = rpc(&mut s, "tools/call", json!({"name":name,"arguments":args}));
             assert_eq!(r["result"]["isError"], true, "{r}");
-            assert!(r.to_string().contains("person"), "{r}");
+            assert!(r.to_string().contains("HUMAN_SIGNATURE_REQUIRED"), "{r}");
             assert!(seen.borrow().is_empty(), "nothing, including credentials, is sent to the window");
         }
         s.compact = true;
@@ -714,6 +788,70 @@ mod tests {
         );
         assert_eq!(r["result"]["isError"], true, "{r}");
         assert!(seen.borrow().is_empty(), "compact dispatch does not send credentials either");
+    }
+
+    #[test]
+    fn claimed_requests_tag_native_tools_and_resources_until_the_next_listen() {
+        use serde_json::json;
+        let seen = std::rc::Rc::default();
+        let mut server = super::McpServer::new(crate::Automation::new()).with_window(Box::new(FakeWindow(std::rc::Rc::clone(&seen))));
+        let claimed = rpc(&mut server, "tools/call", json!({"name":"wait_for_request","arguments":{"agent":"synthetic claimant","timeout_s":0}}));
+        assert_eq!(claimed["result"]["structuredContent"]["id"], 42);
+        rpc(&mut server, "tools/call", json!({"name":"doc_list","arguments":{}}));
+        assert_eq!(seen.borrow().last().unwrap().1["requestId"], 42);
+        rpc(&mut server, "resources/read", json!({"uri":"pdfcraft://doc/7/info"}));
+        assert_eq!(seen.borrow().last().unwrap().1["requestId"], 42);
+        rpc(&mut server, "tools/call", json!({"name":"reply_to_request","arguments":{"id":42,"text":"done"}}));
+        rpc(&mut server, "tools/call", json!({"name":"doc_list","arguments":{}}));
+        assert_eq!(seen.borrow().last().unwrap().1["requestId"], 42, "completion retains claim context for native refusal");
+        let before = seen.borrow().len();
+        let refused = rpc(&mut server, "tools/call", json!({"name":"sign_document","arguments":{"doc":7,"password":"synthetic"}}));
+        assert_eq!(refused["result"]["isError"], true);
+        assert_eq!(seen.borrow().len(), before, "signing preflight still precedes native tagging");
+        rpc(&mut server, "tools/call", json!({"name":"wait_for_request","arguments":{"timeout_s":0}}));
+        rpc(&mut server, "tools/call", json!({"name":"doc_list","arguments":{}}));
+        assert!(seen.borrow().last().unwrap().1.get("requestId").is_none(), "a subsequent empty listen clears the bridge claim");
+    }
+
+    #[test]
+    fn signing_proposals_never_cross_the_control_channel() {
+        use serde_json::json;
+        for compact in [false, true] {
+            let seen = std::rc::Rc::default();
+            let mut server =
+                super::McpServer::new(crate::Automation::new()).with_compact(compact).with_window(Box::new(FakeWindow(std::rc::Rc::clone(&seen))));
+            let call = |server: &mut super::McpServer, proposal: String| {
+                let arguments = json!({"id":1,"proposal":proposal});
+                let params = if compact {
+                    json!({"name":"tool_call","arguments":{"name":"reply_to_request","arguments":arguments}})
+                } else {
+                    json!({"name":"reply_to_request","arguments":arguments})
+                };
+                rpc(server, "tools/call", params)
+            };
+            for operation in [
+                json!({"name":"sign_document","arguments":{"doc":7,"password":"synthetic","id":"synthetic.p12"}}),
+                json!({"name":"fill_sign_add","arguments":{"doc":7,"type":"signature","path":"synthetic.png"}}),
+                json!({"name":"command_batch","arguments":{"steps":[{"id":"sign.fill.text","params":{"type":"initials","path":"synthetic.png"}}]}}),
+                json!({"name":"tool_call","arguments":{"name":"sign_document","arguments":{"password":"synthetic"}}}),
+            ] {
+                for proposal in [operation.to_string(), json!([operation]).to_string()] {
+                    let reply = call(&mut server, proposal);
+                    assert_eq!(reply["result"]["isError"], true, "{reply}");
+                    let failure: serde_json::Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+                    assert_eq!(failure["errorCode"], "HUMAN_SIGNATURE_REQUIRED");
+                    assert!(seen.borrow().is_empty(), "no signing proposal, credential or image crosses the channel");
+                }
+            }
+            for proposal in [
+                "The person signs using their own certificate.".to_string(),
+                json!([{"name":"form_add_field","arguments":{"doc":7,"type":"signature","name":"Signature","page":1}}]).to_string(),
+                json!({"text":"Explain sign_document without executing it."}).to_string(),
+            ] {
+                assert_eq!(call(&mut server, proposal)["result"]["isError"], false);
+            }
+            assert_eq!(seen.borrow().len(), 3, "signature preparation and ordinary text still pass");
+        }
     }
 
     #[test]
@@ -728,11 +866,93 @@ mod tests {
     }
 
     #[test]
+    fn ask_agent_normal_and_compact_calls_share_strict_validation() {
+        use serde_json::json;
+        for compact in [false, true] {
+            let seen = std::rc::Rc::default();
+            let mut server =
+                super::McpServer::new(crate::Automation::new()).with_compact(compact).with_window(Box::new(FakeWindow(std::rc::Rc::clone(&seen))));
+            rpc(&mut server, "initialize", json!({"clientInfo":{"name":"synthetic editor"}}));
+            assert!(tool_names(&mut server).contains(&"wait_for_request".to_string()));
+            let call = |server: &mut super::McpServer, name: &str, arguments: serde_json::Value| {
+                let args = if compact {
+                    json!({"name":"tool_call","arguments":{"name":name,"arguments":arguments}})
+                } else {
+                    json!({"name":name,"arguments":arguments})
+                };
+                rpc(server, "tools/call", args)
+            };
+            let result = call(&mut server, "wait_for_request", json!({"timeout_s":60.5}));
+            assert_eq!(result["result"]["structuredContent"]["none"], true);
+            assert_eq!(seen.borrow().last().unwrap(), &("agent.listen".to_string(), json!({"timeoutMs":60000,"agent":"synthetic editor"})));
+            call(&mut server, "wait_for_request", json!({"timeout_s":0.0019,"agent":"override"}));
+            assert_eq!(seen.borrow().last().unwrap().1, json!({"timeoutMs":1,"agent":"override"}));
+            for bad in [json!({"timeoutMs":30}), json!({"timeout_s":-1}), json!({"timeout_s":"30"}), json!({"agent":null}), json!([])] {
+                let result = call(&mut server, "wait_for_request", bad);
+                assert_eq!(result["error"]["code"], -32602, "{result}");
+            }
+            for bad in [
+                json!({"id":1}),
+                json!({"id":-1,"text":"x"}),
+                json!({"id":1.5,"text":"x"}),
+                json!({"id":9007199254740992u64,"text":"x"}),
+                json!({"id":1,"text":false}),
+                json!({"id":1,"text":"x","done":1}),
+                json!({"id":1,"proposal":"x","format":"html"}),
+                json!({"id":1,"error":" "}),
+                json!({"id":1,"error":"failure","proposal":"x"}),
+                json!({"id":1,"error":"failure","done":false}),
+                json!({"id":1,"text":"x","comment":"summary","done":false}),
+                json!({"id":1,"text":"x","message":"wrong dialect"}),
+                json!({"id":1,"text":"界".repeat(4001)}),
+                json!({"id":1,"text":"x","comment":"x".repeat(2001)}),
+                json!({"id":1,"proposal":"x".repeat(200001)}),
+            ] {
+                let result = call(&mut server, "reply_to_request", bad);
+                assert_eq!(result["error"]["code"], -32602, "{result}");
+            }
+            let before = seen.borrow().len();
+            for good in [
+                json!({"id":1,"proposal":""}),
+                json!({"id":1,"text":"progress","done":false}),
+                json!({"id":1,"text":"done","comment":"summary"}),
+                json!({"id":1,"error":"failed"}),
+            ] {
+                assert_eq!(call(&mut server, "reply_to_request", good)["result"]["isError"], false);
+            }
+            assert_eq!(seen.borrow().len(), before + 4);
+        }
+    }
+
+    #[test]
+    fn ask_agent_headless_refuses_instead_of_editing_another_document() {
+        let mut server = super::McpServer::new(crate::Automation::new());
+        let result = rpc(&mut server, "tools/call", serde_json::json!({"name":"wait_for_request","arguments":{}}));
+        assert_eq!(result["result"]["isError"], true);
+        let failure: serde_json::Value = serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(failure["errorCode"], "NO_UI");
+        assert!(failure["error"].as_str().unwrap().contains("--connect FILE"));
+    }
+
+    #[test]
     fn resource_uris_parse() {
         assert_eq!(parse_uri("pdfcraft://doc/3/info"), Some(Resource::Info(3)));
         assert_eq!(parse_uri("pdfcraft://doc/3/page/2/image?dpi=36"), Some(Resource::PageImage(3, 2, Some(36.0))));
         assert_eq!(parse_uri("pdfcraft://doc/3/page/2/text"), Some(Resource::PageText(3, 2)));
         assert_eq!(parse_uri("pdfcraft://doc/x/info"), None);
         assert_eq!(parse_uri("file:///etc/passwd"), None);
+    }
+}
+
+#[cfg(test)]
+mod agent_contract_regression {
+    #[test]
+    fn ask_agent_common_tools_are_discoverable() {
+        let mut server = super::McpServer::new(crate::Automation::new());
+        let result = server.handle(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}})).unwrap();
+        let tools = result["result"]["tools"].as_array().unwrap();
+        for name in ["wait_for_request", "reply_to_request"] {
+            assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
+        }
     }
 }

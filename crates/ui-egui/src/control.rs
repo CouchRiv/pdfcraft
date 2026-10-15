@@ -99,6 +99,7 @@ pub struct ControlRequest {
 pub struct ControlClient {
     tx: Sender<ControlRequest>,
     ctx: egui::Context,
+    agent_hub: crate::ask_agent::AgentHub,
 }
 
 impl ControlClient {
@@ -111,6 +112,11 @@ impl ControlClient {
         }
         self.ctx.request_repaint();
         rx
+    }
+
+    /// Ask Agent's queue, shared with the control channel's connection threads.
+    pub fn agent_hub(&self) -> crate::ask_agent::AgentHub {
+        self.agent_hub.clone()
     }
 }
 
@@ -190,12 +196,16 @@ pub fn attach(ctx: &egui::Context) -> (Control, ControlClient) {
     ctx.add_plugin(ControlPlugin { shared: shared.clone() });
     ctx.enable_accesskit();
     let (tx, rx) = channel();
-    (Control { rx, shared, pending: Vec::new(), next_tag: 1, private_until_pass: 0 }, ControlClient { tx, ctx: ctx.clone() })
+    (
+        Control { rx, shared, pending: Vec::new(), next_tag: 1, private_until_pass: 0 },
+        ControlClient { tx, ctx: ctx.clone(), agent_hub: crate::ask_agent::AgentHub::default() },
+    )
 }
 
 /// What a request needs from the app (implemented by `PdfCraftApp`).
 pub(crate) trait Host {
     fn state(&self) -> Value;
+    fn ask_agent(&mut self, p: &Value) -> Reply;
     fn command(&mut self, id: &str) -> Reply;
     fn dock(&mut self, reset: bool, params: &Value) -> Reply;
     fn commands(&self) -> Value;
@@ -203,6 +213,7 @@ pub(crate) trait Host {
     fn open(&mut self, path: &str) -> Reply;
     fn quit(&mut self, ctx: &egui::Context) -> bool;
     fn tool(&mut self, name: &str, args: &Value, root: Option<&str>) -> Reply;
+    fn agent_tool(&mut self, owner: u64, request: Option<u64>, name: &str, args: &Value, root: Option<&str>) -> Reply;
     fn private_dialog(&self) -> bool;
 }
 
@@ -307,6 +318,7 @@ impl Control {
             )));
         }
         let r: Result<Handled, String> = (|| match method {
+            "ui.askAgent" => Ok(Handled::Now(host.ask_agent(p))),
             "ui.state" => {
                 let mut state = host.state();
                 let size = ctx.input(|i| i.viewport_rect().size());
@@ -327,15 +339,31 @@ impl Control {
             }
             "ui.open" => Ok(Handled::Now(host.open(str_param("path")?))),
             "tool.call" => {
-                only_params(p, method, &["name", "arguments", "root"])?;
+                only_params(p, method, &["name", "arguments", "root", "requestId", "__agentOwner", "__askConnection"])?;
                 let root = match p.get("root") {
                     None | Some(Value::Null) => None,
                     Some(Value::String(r)) => Some(r.as_str()),
                     Some(_) => return Err("tool.call: root must be a folder path".into()),
                 };
-                Ok(Handled::Now(host.tool(str_param("name")?, p.get("arguments").unwrap_or(&Value::Null), root)))
+                let name = str_param("name")?;
+                let args = p.get("arguments").unwrap_or(&Value::Null);
+                if p["__askConnection"] == true {
+                    Ok(Handled::Now(host.agent_tool(
+                        p["__agentOwner"].as_u64().ok_or("NOT_OWNER: missing socket context")?,
+                        p["requestId"].as_u64(),
+                        name,
+                        args,
+                        root,
+                    )))
+                } else {
+                    Ok(Handled::Now(host.tool(name, args, root)))
+                }
             }
-            "ui.inspect" | "tool.inspect" => Ok(Handled::Now(Ok(self.inspect(p)))),
+            "ui.inspect" | "tool.inspect" => {
+                let mut value = self.inspect(p);
+                value["askAgent"] = host.state()["askAgent"].clone();
+                Ok(Handled::Now(Ok(value)))
+            }
             "ui.click" => self.click(p),
             "ui.focus" => self.focus(p),
             "ui.resize" => {
@@ -675,6 +703,33 @@ fn screenshot_png(image: &egui::ColorImage, region: Option<egui::Rect>, ppp: f32
 }
 
 impl Host for crate::PdfCraftApp {
+    fn agent_tool(&mut self, owner: u64, request: Option<u64>, name: &str, args: &Value, root: Option<&str>) -> Reply {
+        if agent_signing_call(name, args, 0) {
+            return Err("HUMAN_SIGNATURE_REQUIRED: signing is person-only".into());
+        }
+        let read = agent_read_only_tool(name);
+        if !read {
+            self.ask_agent.hub.may_edit(owner, request).map_err(|e| format!("{}: {}", e.code, e.message))?;
+        }
+        // The agent's comments carry its name, like its other edits.
+        let mut args = args.clone();
+        if let (Some(id), Some(o)) = (request, args.as_object_mut())
+            && name.starts_with("comment_")
+            && !o.contains_key("author")
+            && let Some(author) = self.ask_agent.author(id)
+        {
+            o.insert("author".into(), json!(author));
+        }
+        let r = self.run_tool(name, &args, root);
+        if let (Some(id), false, Ok(_)) = (request, read, &r) {
+            self.ask_agent.record_edit(id);
+        }
+        r
+    }
+
+    fn ask_agent(&mut self, p: &Value) -> Reply {
+        self.ask_agent_command(p)
+    }
     fn dock(&mut self, reset: bool, params: &Value) -> Reply {
         crate::docking::command(self, reset, params)
     }
@@ -700,6 +755,7 @@ impl Host for crate::PdfCraftApp {
         #[cfg(target_arch = "wasm32")]
         let pending_opens: Vec<Value> = Vec::new();
         json!({
+            "askAgent": self.ask_agent_inspect(),
             "docking": self.docking,
             "documents": docs,
             "pending_opens": pending_opens,
@@ -837,6 +893,18 @@ impl Host for crate::PdfCraftApp {
     }
 
     fn tool(&mut self, name: &str, args: &Value, root: Option<&str>) -> Reply {
+        if agent_signing_call(name, args, 0) {
+            return Err("HUMAN_SIGNATURE_REQUIRED: signing is refused; only the person may sign in the native UI".into());
+        }
+        if !agent_read_only_tool(name) {
+            self.ask_agent.hub.may_edit(0, None).map_err(|e| format!("{}: {}", e.code, e.message))?;
+        }
+        self.run_tool(name, args, root)
+    }
+}
+
+impl crate::PdfCraftApp {
+    pub(crate) fn run_tool(&mut self, name: &str, args: &Value, root: Option<&str>) -> Reply {
         // An agent must not overwrite an editor's draft, save an older value, or leave stale
         // field/object indexes after changing the document. The person commits typing first.
         if self.dialog.is_some()
@@ -1008,12 +1076,16 @@ fn serve_with(client: ControlClient, limits: Limits) -> std::io::Result<Endpoint
             };
             let client = client.clone();
             let expected = expected.clone();
+            static NEXT_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let owner = NEXT_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let _ = std::thread::Builder::new().name("pdfcraft-control-conn".into()).spawn(move || {
                 // Held until `auth` succeeds; given back however this thread ends.
                 let mut slot = Some(slot);
                 let Ok(read) = stream.try_clone() else { return };
                 let mut write = stream;
                 let mut authed = false;
+                let mut ask_connection = false;
+                let mut claimed_request = None;
                 let mut reader = BufReader::new(Reading { stream: read, until: Some(std::time::Instant::now() + limits.auth_deadline) });
                 let mut buf = Vec::new();
                 loop {
@@ -1063,11 +1135,21 @@ fn serve_with(client: ControlClient, limits: Limits) -> std::io::Result<Endpoint
                                     (rpc_error(id, -32001, "authenticate first: auth {token}"), true)
                                 }
                             } else {
-                                let rx = client.send(method, params);
-                                match rx.recv_timeout(std::time::Duration::from_secs(30)) {
-                                    Ok(Ok(v)) => (json!({ "jsonrpc": "2.0", "id": id, "result": v }), false),
-                                    Ok(Err(e)) => (rpc_error(id, -32000, &e), false),
-                                    Err(_) => (rpc_error(id, -32002, "the app did not answer within 30 s"), false),
+                                // Ask Agent's two methods are answered here; anything else goes to the window.
+                                let alive = || agent_peer_alive(&write).unwrap_or(false);
+                                if let Some(mut r) = client.agent_hub.handle(owner, method, &params, alive) {
+                                    if let Some(taken) = r["result"]["id"].as_u64().filter(|_| method == "agent.listen") {
+                                        (ask_connection, claimed_request) = (true, Some(taken));
+                                    }
+                                    client.ctx.request_repaint();
+                                    r["jsonrpc"] = json!("2.0");
+                                    r["id"] = id;
+                                    (r, false)
+                                } else {
+                                    match relay_for_connection(&client, owner, claimed_request, ask_connection, method, params) {
+                                        Ok(v) => (json!({ "jsonrpc": "2.0", "id": id, "result": v }), false),
+                                        Err(e) => (rpc_error(id, -32000, &e), false),
+                                    }
                                 }
                             }
                         }
@@ -1076,6 +1158,8 @@ fn serve_with(client: ControlClient, limits: Limits) -> std::io::Result<Endpoint
                         break;
                     }
                 }
+                client.agent_hub.disconnect(owner);
+                client.ctx.request_repaint();
             });
         }
     })?;
@@ -1122,7 +1206,12 @@ fn read_line_limited(reader: &mut impl std::io::BufRead, buf: &mut Vec<u8>, max:
 
 #[cfg(not(target_arch = "wasm32"))]
 fn rpc_error(id: Value, code: i64, message: &str) -> Value {
-    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+    let error_code = message
+        .split_once(':')
+        .map(|(c, _)| c)
+        .filter(|c| c.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_'))
+        .unwrap_or(if code == -32001 { "UNAUTHORIZED" } else { "INVALID_PARAMS" });
+    json!({ "jsonrpc": "2.0", "id": id, "ok":false, "errorCode":error_code, "error": { "code": code, "message": message, "data":{"errorCode":error_code} } })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1411,6 +1500,132 @@ mod window_draft_tests {
         assert!(e.contains("draft has been kept"), "{e}");
         assert_eq!(app.views[0].content.draft.as_ref().unwrap().text, "Uncommitted");
     }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[allow(clippy::unwrap_used)]
+mod agent_transport_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    fn exchange(w: &mut std::net::TcpStream, r: &mut BufReader<std::net::TcpStream>, msg: Value) -> Value {
+        writeln!(w, "{msg}").unwrap();
+        w.flush().unwrap();
+        let mut line = String::new();
+        r.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+    #[test]
+    fn ask_agent_tcp_auth_owner_late_reply_and_longpoll() {
+        let ctx = egui::Context::default();
+        let (_control, client) = attach(&ctx);
+        let hub = client.agent_hub();
+        let endpoint = serve(client).unwrap();
+        let connect = || {
+            let w = std::net::TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
+            w.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+            let r = BufReader::new(w.try_clone().unwrap());
+            (w, r)
+        };
+        let (mut bad, mut br) = connect();
+        assert_eq!(exchange(&mut bad, &mut br, json!({"id":1,"method":"auth","params":{"token":"wrong"}}))["ok"], false);
+        assert!(hub.agents().is_empty());
+        let (mut w, mut r) = connect();
+        assert_eq!(exchange(&mut w, &mut r, json!({"id":1,"method":"auth","params":{"token":endpoint.token}}))["result"]["ok"], true);
+        assert_eq!(
+            exchange(&mut w, &mut r, json!({"id":2,"method":"agent.listen","params":{"timeoutMs":0,"agent":"editor"}}))["result"],
+            json!({"none":true})
+        );
+        let id = hub.ask(crate::ask_agent::Request {
+            id: 0,
+            instruction: "Explain synthetic page".into(),
+            history: Vec::new(),
+            selection: json!({"pages":[1]}),
+            document: json!({"id":"pdf:1"}),
+            agent: None,
+        });
+        let claim = exchange(&mut w, &mut r, json!({"id":3,"method":"agent.listen","params":{"timeoutMs":0}}));
+        assert_eq!(claim["result"]["id"], id);
+        let (mut other, mut or) = connect();
+        exchange(&mut other, &mut or, json!({"id":1,"method":"auth","params":{"token":endpoint.token}}));
+        let denied = exchange(&mut other, &mut or, json!({"id":2,"method":"agent.reply","params":{"id":id,"text":"stolen"}}));
+        assert_eq!(denied["errorCode"], "NOT_OWNER");
+        assert!(denied["error"].is_string());
+        let reply = exchange(&mut w, &mut r, json!({"id":4,"method":"agent.reply","params":{"id":id,"text":"answer"}}));
+        assert_eq!(reply["result"], json!({"id": id, "done": true}));
+        let before = std::time::Instant::now();
+        assert_eq!(exchange(&mut w, &mut r, json!({"id":5,"method":"agent.listen","params":{"timeoutMs":120}}))["result"], json!({"none":true}));
+        assert!(before.elapsed() >= std::time::Duration::from_millis(100));
+    }
+}
+
+fn agent_signing_call(name: &str, args: &Value, depth: usize) -> bool {
+    if depth > 16 || name.starts_with("sign_") || (name.starts_with("sign.") && name != "sign.fill.text") {
+        return true;
+    }
+    if matches!(name, "fill_sign_add" | "sign.fill.text") && matches!(args["type"].as_str(), Some("signature" | "initials")) {
+        return true;
+    }
+    match name {
+        "command_run" => args["id"].as_str().is_some_and(|id| agent_signing_call(id, args.get("params").unwrap_or(&Value::Null), depth + 1)),
+        "command_batch" => args["steps"].as_array().is_some_and(|steps| steps.iter().any(|step| agent_signing_call("command_run", step, depth + 1))),
+        "tool_call" => args["name"].as_str().is_some_and(|n| agent_signing_call(n, args.get("arguments").unwrap_or(&Value::Null), depth + 1)),
+        _ => false,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn agent_peer_alive(stream: &std::net::TcpStream) -> Result<bool, String> {
+    stream.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let mut byte = [0];
+    let result = match stream.peek(&mut byte) {
+        Ok(0) => false,
+        Ok(_) => true,
+        Err(e) => e.kind() == std::io::ErrorKind::WouldBlock,
+    };
+    stream.set_nonblocking(false).map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+fn agent_read_only_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "doc_list"
+            | "doc_info"
+            | "doc_inspect"
+            | "render_preview"
+            | "command_list"
+            | "text_extract"
+            | "text_find"
+            | "page_render"
+            | "form_fields"
+            | "comment_list"
+            | "bookmark_list"
+            | "form_detect_fields"
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn relay_for_connection(client: &ControlClient, owner: u64, claim: Option<u64>, ask: bool, method: &str, mut params: Value) -> Reply {
+    if method == "tool.call" {
+        let p = params.as_object_mut().ok_or("INVALID_PARAMS: tool.call parameters must be an object")?;
+        if p.contains_key("__agentOwner") || p.contains_key("__askConnection") {
+            return Err("INVALID_PARAMS: reserved native context".into());
+        }
+        if let Some(id) = p.get("requestId")
+            && (id.as_u64() != claim || claim.is_none())
+        {
+            return Err("NOT_OWNER: native request tag does not match this socket's claim".into());
+        }
+        if let Some(id) = claim {
+            p.insert("requestId".into(), json!(id));
+        }
+        p.insert("__agentOwner".into(), json!(owner));
+        p.insert("__askConnection".into(), json!(ask));
+    }
+    client
+        .send(method, params)
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .unwrap_or_else(|_| Err("NO_UI: the app did not answer within 30 s; open the connected window".into()))
 }
 
 #[cfg(test)]

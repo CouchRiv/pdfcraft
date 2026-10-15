@@ -1,0 +1,20 @@
+01-select 2 Select the page to review
+02-open 1.3 Open Ask Agent
+02-picker 2.5 Choose Claude Code or Codex
+02-picked 1 Claude Code selected
+03-actions 3 Choose a PDF action
+03a-forms 2 Explore form preparation
+03b-redaction 2 Explore redaction review
+03-prefilled 3 Review the instruction, then Send
+04-working 2 The agent works on the page
+05-edited 2.5 The agent adds real highlights
+06-answer 3 Read the summary; Keep or Undo
+07-followup-draft 2.5 Reply in the same thread
+08-followup-answer 3 Review the follow-up, then choose Undo
+history 6 Conversation: your earlier instruction and the agent response
+history-latest 6 Conversation: the current instruction and latest response
+10-kept 4 Keep: highlights and signed comments remain
+comments 6 After Keep: signed comments retain the instruction and response
+comments-followup 6 The follow-up is retained with its instruction and response
+08-followup-answer 2 Alternative: choose Undo instead of Keep
+09-undone 3.5 Undo removes the highlights and agent notes

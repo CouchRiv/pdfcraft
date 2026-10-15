@@ -124,7 +124,8 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
         note_once(app, s);
     }
     let agents = app.ask_agent.hub.agents();
-    let view = ui::View { snapshot: snapshot.as_ref(), agents: &agents, actions: QUICK_ACTIONS };
+    let (history, instruction) = app.ask_agent.open.as_ref().map(|open| (open.turns.as_slice(), open.asked.as_str())).unwrap_or((&[], ""));
+    let view = ui::View { snapshot: snapshot.as_ref(), agents: &agents, actions: QUICK_ACTIONS, history, instruction };
     if let Some(action) = ui::bubble(ctx, anchor, &view, &mut app.ask_agent.draft, &mut app.ask_agent.picked) {
         handle_action(app, action);
     }
@@ -146,7 +147,8 @@ fn note_once(app: &mut PdfCraftApp, s: &Snapshot) {
     let Some(open) = &app.ask_agent.open else { return };
     let page = open.target["pages"][0].as_u64().unwrap_or(1);
     let at = open.target["rects"][0]["rect"].as_array().map(|r| [r[2].clone(), r[1].clone()]).map_or(json!([36, 36]), |p| json!(p));
-    let args = json!({"doc": open.doc_id.0, "page": page, "type": "note", "at": at, "contents": answer, "author": author});
+    let contents = format!("Instruction: {}\n\nAgent response: {}", open.asked, answer);
+    let args = json!({"doc": open.doc_id.0, "page": page, "type": "note", "at": at, "contents": contents, "author": author});
     if app.run_tool("comment_add", &args, None).is_ok() {
         app.ask_agent.record_edit(s.id);
     }

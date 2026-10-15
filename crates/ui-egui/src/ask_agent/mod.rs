@@ -11,6 +11,40 @@ use crate::PdfCraftApp;
 use egui::Rect;
 use serde_json::json;
 
+/// PDF-specific prompts. Choosing one only fills the editable instruction.
+const QUICK_ACTIONS: &[ui::QuickAction] = &[
+    ui::QuickAction {
+        label: "Summarize",
+        group: "",
+        instruction: "Summarize the selected PDF content concisely, preserving the key facts and figures.",
+    },
+    ui::QuickAction {
+        label: "Explain selection",
+        group: "",
+        instruction: "Explain the selected PDF content in plain language. Identify uncertainties without inventing details.",
+    },
+    ui::QuickAction {
+        label: "Highlight key points",
+        group: "",
+        instruction: "Highlight the key results in the selected PDF content and add a short summary note.",
+    },
+    ui::QuickAction {
+        label: "Add review note",
+        group: "",
+        instruction: "Review the selected PDF content and add a concise comment with issues or questions to check.",
+    },
+    ui::QuickAction {
+        label: "Prepare fields",
+        group: "Forms",
+        instruction: "Inspect the selected PDF content for form fields and propose the field names and types. Ask me to confirm before creating or changing fields.",
+    },
+    ui::QuickAction {
+        label: "Mark sensitive text",
+        group: "Redaction",
+        instruction: "Identify potentially sensitive text in the selected PDF content and mark it for my review. Do not apply redactions or permanently remove content.",
+    },
+];
+
 /// Application state for Ask Agent.
 #[derive(Default)]
 pub struct AskAgent {
@@ -90,7 +124,7 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
         note_once(app, s);
     }
     let agents = app.ask_agent.hub.agents();
-    let view = ui::View { snapshot: snapshot.as_ref(), agents: &agents };
+    let view = ui::View { snapshot: snapshot.as_ref(), agents: &agents, actions: QUICK_ACTIONS };
     if let Some(action) = ui::bubble(ctx, anchor, &view, &mut app.ask_agent.draft, &mut app.ask_agent.picked) {
         handle_action(app, action);
     }

@@ -279,6 +279,7 @@ key	Space	Mezerník
 	Next page	Další stránka
 	Previous page	Předchozí stránka
 	Current page — type a page number or label (such as iv) and press Enter	Aktuální stránka — zadejte číslo nebo označení stránky (třeba iv) a stiskněte Enter
+	Zoom — type a percentage and press Enter	Lupa — zadejte procenta a stiskněte Enter
 	Welcome to PdfCraft	Vítá vás PdfCraft
 	An open-source PDF workbench — local, private, and scriptable.	Open-source dílna pro PDF — lokální, soukromá a skriptovatelná.
 	Join the ArtCraft community	Připojte se ke komunitě ArtCraft
@@ -1755,6 +1756,7 @@ key	Space	Mezerník
 	Couldn't use {name}: {e}	{name} nelze použít: {e}
 	Couldn't extract pages: {e}	Stránky nelze extrahovat: {e}
 	Couldn't write {name}: {e}	{name} nelze zapsat: {e}
+	the name is not a plain file name	název není prostý název souboru
 	Wrote 1 file to {dir}	Zapsán 1 soubor do {dir}
 	Wrote {n} files to {dir}	Zapsáno souborů: {n} (složka {dir})
 	No pages match those choices	Těmto volbám neodpovídají žádné stránky
@@ -2454,6 +2456,11 @@ animation effects	Off	Vypnuto
 	This document is trying to open a local file:	Tento dokument se pokouší otevřít místní soubor:
 	Move tag earlier	Přesunout značku dříve
 	Move tag later	Přesunout značku později
+
+# Historical snapshot notice bar (View signed version / View revision).
+	You are viewing the signed version of “{from}” (revision {rev}). It is a snapshot: changes here won't affect the original.	Prohlížíte si podepsanou verzi dokumentu „{from}“ (revize {rev}). Je to snímek: změny zde neovlivní originál.
+	You are viewing revision {rev} of “{from}”. It is a snapshot: changes here won't affect the original.	Prohlížíte si revizi {rev} dokumentu „{from}“. Je to snímek: změny zde neovlivní originál.
+
 # Ask Agent
 	Ask Agent	Zeptat se agenta
 	Instruction	Instrukce

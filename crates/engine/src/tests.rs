@@ -5733,6 +5733,7 @@ fn group_undo_collapses_multiple_edits_into_one_step() {
 
     session.group_undo(id, 2, Label::of("Ask Agent")).unwrap();
     assert_eq!(session.get(id).unwrap().can_undo(), Some("Ask Agent"));
+    assert!(matches!(session.group_undo(id, 0, Label::of("Ask Agent")), Err(EditError::NothingToUndo)));
     session.undo(id).unwrap();
     assert_eq!(session.get(id).unwrap().info.pages[0].rotation, 0);
     assert_eq!(session.get(id).unwrap().info.pages[1].rotation, 0);

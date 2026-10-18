@@ -3868,7 +3868,7 @@ impl Session {
     pub fn group_undo(&mut self, id: DocId, count: usize, label: Label) -> Result<(), EditError> {
         let doc = self.doc_mut(id)?;
         let editor = doc.editor.as_mut().ok_or(EditError::NothingToUndo)?;
-        if editor.undo.len() < count {
+        if count == 0 || editor.undo.len() < count {
             return Err(EditError::NothingToUndo);
         }
         let start = editor.undo.len() - count;

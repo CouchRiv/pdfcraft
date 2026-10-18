@@ -192,8 +192,10 @@ fn handle_action(app: &mut PdfCraftApp, act: Action) {
             for _ in 0..open.edits_count {
                 let _ = app.session.undo(open.doc_id);
             }
-            if let (Some(doc), Some(i)) = (app.session.get(open.doc_id), app.active) {
-                app.views[i].document_changed(&doc.info);
+            if let Some(doc) = app.session.get(open.doc_id)
+                && let Some(view) = app.views.iter_mut().find(|v| v.id == open.doc_id)
+            {
+                view.document_changed(&doc.info);
             }
         }
     }
@@ -255,8 +257,10 @@ impl PdfCraftApp {
             handle_action(self, Action::Close);
             return Ok(json!({ "open": false }));
         }
-        let anchor = self.active.and_then(|i| self.views.get(i)).and_then(|v| v.page_screen_rect(v.current));
-        open_at(self, anchor.unwrap_or_else(|| Rect::from_min_size(egui::pos2(96.0, 160.0), egui::vec2(1.0, 16.0))));
+        if self.ask_agent.open.is_none() {
+            let anchor = self.active.and_then(|i| self.views.get(i)).and_then(|v| v.page_screen_rect(v.current));
+            open_at(self, anchor.unwrap_or_else(|| Rect::from_min_size(egui::pos2(96.0, 160.0), egui::vec2(1.0, 16.0))));
+        }
         if self.ask_agent.open.is_none() {
             return Err("STALE_TARGET: no document open".into());
         }

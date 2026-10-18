@@ -1731,6 +1731,8 @@ fn ask_agent_bubble_flow_keep_undo_followup() {
 
     // 1. Open Ask Agent and send first instruction
     ok(&mut h, &c, "ui.askAgent", json!({}));
+    let open_repeat = ok(&mut h, &c, "ui.askAgent", json!({}));
+    assert_eq!(open_repeat["open"], true);
     let sent = ok(&mut h, &c, "ui.askAgent", json!({"instruction":"First turn"}));
     let id1 = sent["id"].as_u64().unwrap();
     let req1 = hub.listen(50, None, std::time::Duration::ZERO, || true).unwrap();

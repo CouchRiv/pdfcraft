@@ -185,7 +185,11 @@ impl McpServer {
                     if matches!(inner.as_str(), "wait_for_request" | "reply_to_request") {
                         return self.agent_call(&inner, &inner_args);
                     }
-                    if self.window.is_some() && window::ui_method(&inner).is_some() {
+                    if self.window.is_some()
+                        && let Some((_, keys)) = window::ui_method(&inner)
+                    {
+                        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+                        check_keys(&inner, &inner_args, &keys).map_err(|e| (INVALID_PARAMS, e))?;
                         return Ok(self.ui_call(&inner, &inner_args));
                     }
                     return Ok(match self.run(&inner, &inner_args) {
@@ -863,6 +867,12 @@ mod tests {
         let mut compact =
             super::McpServer::new(crate::Automation::new()).with_compact(true).with_window(Box::new(FakeWindow(std::rc::Rc::default())));
         assert!(tool_names(&mut compact).iter().any(|n| n == "ui_screenshot"), "compact mode lists the ui tools too");
+        let r = rpc(
+            &mut compact,
+            "tools/call",
+            serde_json::json!({ "name": "tool_call", "arguments": { "name": "ui_state", "arguments": { "invalid": true } } }),
+        );
+        assert_eq!(r["error"]["code"], -32602, "{r}");
     }
 
     #[test]

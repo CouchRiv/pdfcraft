@@ -149,5 +149,7 @@ sent extra keys before get an error now.
   requests can wait until it is drawn again.
 
 Ask Agent exposes `wait_for_request` and `reply_to_request` through this bridge.
-Requests are session-only, connection-owned, reply-only for now, and never silently run
-in a separate headless document.
+Requests are session-only and connection-owned. A claimed request can call the connected
+window's native tools, including document-mutating tools. Ownership checks still apply,
+signing remains person-only, and agent edits can be kept or undone. Requests never silently
+run in a separate headless document.

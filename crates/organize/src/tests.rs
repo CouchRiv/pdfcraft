@@ -1345,6 +1345,18 @@ fn combine_keeps_each_files_language_and_role_names_apart() {
     assert_eq!(types, ["Heading", "P", "P", "Heading_2", "P", "P"]);
 }
 
+/// A role map entry can name another of the file's types: when that type is renamed, the entry
+/// follows it, so B's headings still end at P and not at A's H1.
+#[test]
+fn combine_renames_role_map_values_that_name_a_renamed_type() {
+    let (a, b) = (tagged("en-US", "H1 /Title /H1", "h"), tagged("fr-FR", "Title /Title /P", "h"));
+    let out = full_roundtrip(&combine(&[("A", &a), ("B", &b)]).unwrap());
+    let root = out.get(catalog(&out).reference(b"StructTreeRoot").unwrap()).as_dict().cloned().unwrap();
+    let roles = root.get(b"RoleMap").and_then(|r| r.as_dict()).cloned().unwrap();
+    assert_eq!((roles.name(b"Title_2"), roles.name(b"Heading_2")), (Some(&b"P"[..]), Some(&b"Title_2"[..])));
+    assert_eq!((roles.name(b"Title"), roles.name(b"Heading")), (Some(&b"H1"[..]), Some(&b"H1"[..])));
+}
+
 #[test]
 fn combine_with_an_untagged_file_keeps_the_tags_but_claims_no_tagged_pdf() {
     let a = tagged("en-US", "H1", "h");
@@ -1496,7 +1508,8 @@ fn bookmarks_report_the_view_their_destination_asks_for() {
             ("Action".into(), Some(0), Some((b"FitR".to_vec(), vec![Some(10.0), Some(20.0), Some(110.0), None]))),
             ("Nowhere".into(), None, None),
         ]
-    );}
+    );
+}
 
 #[test]
 fn combine_and_insert_share_identical_resources() {

@@ -124,7 +124,7 @@ impl Merged {
         let roles = merge_names(&mut self.role_map, src, tree_root.get(b"RoleMap"), &mut copier, dst);
         let classes = merge_names(&mut self.class_map, src, tree_root.get(b"ClassMap"), &mut copier, dst);
         if let Some(ns) = tree_root.get(b"Namespaces").map(|n| src.resolve(n)).and_then(|n| n.as_array().cloned()) {
-            self.namespaces.extend(ns.iter().map(|n| copier.copy_value(dst, n, None)));
+            self.namespaces.extend(ns.iter().map(|n| copier.copy_val(dst, n, None)));
         }
 
         // IDs another source already uses are renamed (and the /Headers that name them).
@@ -161,18 +161,18 @@ impl Merged {
                         };
                         kids(src, &mut copier, dst, v, e.page, pages, objects, &child, &direct)
                     }
-                    b"S" => Some(rename(v, &roles).unwrap_or_else(|| copier.copy_value(dst, v, None))),
+                    b"S" => Some(rename(v, &roles).unwrap_or_else(|| copier.copy_val(dst, v, None))),
                     b"C" => Some(match v {
                         Object::Array(a) => {
-                            Object::Array(a.iter().map(|c| rename(c, &classes).unwrap_or_else(|| copier.copy_value(dst, c, None))).collect())
+                            Object::Array(a.iter().map(|c| rename(c, &classes).unwrap_or_else(|| copier.copy_val(dst, c, None))).collect())
                         }
-                        other => rename(other, &classes).unwrap_or_else(|| copier.copy_value(dst, other, None)),
+                        other => rename(other, &classes).unwrap_or_else(|| copier.copy_val(dst, other, None)),
                     }),
                     b"ID" => Some(match src.resolve(v).as_string() {
                         Some(s) => {
                             Object::String(pdfcraft_cos::PdfString::literal(renamed_ids.get(&s.bytes).cloned().unwrap_or_else(|| s.bytes.clone())))
                         }
-                        None => copier.copy_value(dst, v, None),
+                        None => copier.copy_val(dst, v, None),
                     }),
                     b"Ref" => Some(Object::Array(
                         src.resolve(v)
@@ -183,8 +183,8 @@ impl Merged {
                             .map(|r| Object::Ref(*r))
                             .collect(),
                     )),
-                    b"A" => Some(with_headers_renamed(&copier.copy_value(dst, v, None), dst, &renamed_ids)),
-                    _ => Some(copier.copy_value(dst, v, None)),
+                    b"A" => Some(with_headers_renamed(&copier.copy_val(dst, v, None), dst, &renamed_ids)),
+                    _ => Some(copier.copy_val(dst, v, None)),
                 };
                 if let Some(value) = value {
                     d.set(k.clone(), value);
@@ -459,7 +459,7 @@ fn kids(
                             Some(s) => m.set(key.clone(), Object::Ref(*s)),
                             None => stream_kept = false,
                         },
-                        _ => m.set(key.clone(), copier.copy_value(dst, v, None)),
+                        _ => m.set(key.clone(), copier.copy_val(dst, v, None)),
                     }
                 }
                 if stream_kept {
@@ -579,7 +579,7 @@ fn merge_names(merged: &mut Dict, src: &Document, map: Option<&Object>, copier: 
     for (name, value) in map.iter() {
         // Resolve the entry, then copy its nested references into the result. Source object
         // numbers are not meaningful in the result (including references inside arrays).
-        let value = copier.copy_value(dst, &src.resolve(value), None);
+        let value = copier.copy_val(dst, &src.resolve(value), None);
         match merged.get(name) {
             None => merged.set(name.clone(), value),
             Some(existing) if *existing == value => {}

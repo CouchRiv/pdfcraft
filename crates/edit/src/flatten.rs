@@ -245,7 +245,7 @@ fn flatten_which(doc: &mut Document, pages: &[usize], which: Which) -> Result<us
             // with nothing in its place (#1794). One whose appearance draws nothing (an empty
             // stream) shows nothing anywhere, so flattening still removes it.
             if !drew {
-                let no_appearance = appearance(doc, d).is_none() && !is_signature_field(doc, d);
+                let no_appearance = appearance(doc, d).is_none();
                 if no_appearance && let Some(r) = entry.as_ref() {
                     undrawn.insert(r);
                 }

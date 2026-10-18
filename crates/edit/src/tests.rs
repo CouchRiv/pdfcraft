@@ -236,7 +236,7 @@ fn flattening_draws_appearances_into_the_page_and_removes_the_comments() {
 /// Fill, flatten, then sign in the prepared field: with `keep_signature_fields`, flattening the
 /// form leaves signature fields (one merged with its widget, one inheriting `/FT /Sig` from its
 /// parent) on the page and in the field tree, and flattens the rest. Without it, as before,
-/// everything goes.
+/// everything goes. The signature boxes have an appearance: a widget with none stays anyway (#1794).
 #[test]
 fn flattening_fields_can_keep_signature_fields() {
     let form = |keep: bool| {
@@ -246,13 +246,14 @@ fn flattening_fields_can_keep_signature_fields() {
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> /Contents 4 0 R /Annots [5 0 R 6 0 R 7 0 R] >>",
             &stream("", " "),
             "<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /V (Jordan) /Rect [10 150 190 170] /F 4 /P 3 0 R /AP << /N 9 0 R >> >>",
-            "<< /Type /Annot /Subtype /Widget /FT /Sig /T (signature) /Rect [10 80 190 120] /F 4 /P 3 0 R >>",
-            "<< /Type /Annot /Subtype /Widget /Parent 8 0 R /Rect [10 20 190 60] /F 4 /P 3 0 R >>",
+            "<< /Type /Annot /Subtype /Widget /FT /Sig /T (signature) /Rect [10 80 190 120] /F 4 /P 3 0 R /AP << /N 9 0 R >> >>",
+            "<< /Type /Annot /Subtype /Widget /Parent 8 0 R /Rect [10 20 190 60] /F 4 /P 3 0 R /AP << /N 9 0 R >> >>",
             "<< /FT /Sig /T (witness) /Kids [7 0 R] >>",
             &stream("/Type /XObject /Subtype /Form /BBox [0 0 180 20]", "BT /Helv 12 Tf 2 5 Td (Jordan) Tj ET"),
         ]);
         let options = FlattenOptions { comments: false, fields: true, keep_signature_fields: keep };
-        assert_eq!(flatten_with(&mut doc, &[0], options).unwrap(), 1, "only the text field has an appearance to draw");
+        let drawn = if keep { 1 } else { 3 };
+        assert_eq!(flatten_with(&mut doc, &[0], options).unwrap(), drawn, "kept signature boxes are not drawn");
         let doc = reopen(&doc);
         let refs = |o: Option<&Object>| -> Vec<u32> {
             o.map(|o| doc.resolve(o))

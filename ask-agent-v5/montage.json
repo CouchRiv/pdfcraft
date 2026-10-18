@@ -1,0 +1,153 @@
+{
+  "crop": [
+    600,
+    160,
+    2560,
+    1600
+  ],
+  "details": [
+    [
+      "history",
+      "08a-conversation",
+      [
+        690,
+        690,
+        1445,
+        1600
+      ]
+    ],
+    [
+      "history-latest",
+      "08b-conversation-latest",
+      [
+        690,
+        690,
+        1445,
+        1600
+      ]
+    ],
+    [
+      "comments",
+      "11-comment-expanded",
+      [
+        1810,
+        420,
+        2470,
+        1500
+      ]
+    ],
+    [
+      "comments-followup",
+      "12-followup-comment-expanded",
+      [
+        1810,
+        420,
+        2470,
+        1500
+      ]
+    ]
+  ],
+  "sequence": [
+    {
+      "frame": "01-select",
+      "seconds": 2,
+      "caption": "Select the page to review"
+    },
+    {
+      "frame": "02-open",
+      "seconds": 1.3,
+      "caption": "Open Ask Agent"
+    },
+    {
+      "frame": "02-picker",
+      "seconds": 2.5,
+      "caption": "Choose Claude Code or Codex"
+    },
+    {
+      "frame": "02-picked",
+      "seconds": 1,
+      "caption": "Claude Code selected"
+    },
+    {
+      "frame": "03-actions",
+      "seconds": 3,
+      "caption": "Choose a PDF action"
+    },
+    {
+      "frame": "03a-forms",
+      "seconds": 2,
+      "caption": "Explore form preparation"
+    },
+    {
+      "frame": "03b-redaction",
+      "seconds": 2,
+      "caption": "Explore redaction review"
+    },
+    {
+      "frame": "03-prefilled",
+      "seconds": 3,
+      "caption": "Review the instruction, then Send"
+    },
+    {
+      "frame": "04-working",
+      "seconds": 2,
+      "caption": "The agent works on the page"
+    },
+    {
+      "frame": "05-edited",
+      "seconds": 2.5,
+      "caption": "The agent adds real highlights"
+    },
+    {
+      "frame": "06-answer",
+      "seconds": 3,
+      "caption": "Read the summary; Keep or Undo"
+    },
+    {
+      "frame": "07-followup-draft",
+      "seconds": 2.5,
+      "caption": "Reply in the same thread"
+    },
+    {
+      "frame": "08-followup-answer",
+      "seconds": 3,
+      "caption": "Review the follow-up, then choose Undo"
+    },
+    {
+      "frame": "history",
+      "seconds": 6,
+      "caption": "Conversation: your earlier instruction and the agent response"
+    },
+    {
+      "frame": "history-latest",
+      "seconds": 6,
+      "caption": "Conversation: the current instruction and latest response"
+    },
+    {
+      "frame": "10-kept",
+      "seconds": 4,
+      "caption": "Keep: highlights and signed comments remain"
+    },
+    {
+      "frame": "comments",
+      "seconds": 6,
+      "caption": "After Keep: signed comments retain the instruction and response"
+    },
+    {
+      "frame": "comments-followup",
+      "seconds": 6,
+      "caption": "The follow-up is retained with its instruction and response"
+    },
+    {
+      "frame": "08-followup-answer",
+      "seconds": 2,
+      "caption": "Alternative: choose Undo instead of Keep"
+    },
+    {
+      "frame": "09-undone",
+      "seconds": 3.5,
+      "caption": "Undo removes the highlights and agent notes"
+    }
+  ],
+  "source": "Real local deterministic application captures"
+}

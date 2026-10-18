@@ -576,25 +576,43 @@ fn within_copy_limits(src: &Document, value: &Object) -> bool {
 fn merge_names(merged: &mut Dict, src: &Document, map: Option<&Object>, copier: &mut Copier<'_>, dst: &mut Document) -> HashMap<Vec<u8>, Vec<u8>> {
     let mut renamed = HashMap::new();
     let Some(map) = map.map(|m| src.resolve(m)).and_then(|m| m.as_dict().cloned()) else { return renamed };
-    for (name, value) in map.iter() {
-        // Resolve the entry, then copy its nested references into the result. Source object
-        // numbers are not meaningful in the result (including references inside arrays).
-        let value = copier.copy_val(dst, &src.resolve(value), None);
-        match merged.get(name) {
-            None => merged.set(name.clone(), value),
-            Some(existing) if *existing == value => {}
-            Some(_) => {
+    // Resolve each entry, then copy its nested references into the result. Source object
+    // numbers are not meaningful in the result (including references inside arrays).
+    let entries: Vec<(Vec<u8>, Object)> = map.iter().map(|(name, value)| (name.clone(), copier.copy_val(dst, &src.resolve(value), None))).collect();
+    // A role map value can name another of the source's types (mappings are transitive), so it
+    // follows that type's new name; that can make one more entry differ from an earlier
+    // source's: repeat until no new name collides.
+    loop {
+        let mut more = false;
+        for (name, value) in &entries {
+            if renamed.contains_key(name) {
+                continue;
+            }
+            let value = rename(value, &renamed).unwrap_or_else(|| value.clone());
+            if merged.get(name).is_some_and(|existing| *existing != value) {
                 let mut n = 2usize;
                 let new = loop {
                     let candidate = [name.as_slice(), format!("_{n}").as_bytes()].concat();
-                    if !merged.contains(&candidate) {
+                    // Not a name already in the result, given to another entry, or used by this source.
+                    let taken = merged.contains(&candidate) || renamed.values().chain(entries.iter().map(|(n, _)| n)).any(|t| *t == candidate);
+                    if !taken {
                         break candidate;
                     }
                     n = n.saturating_add(1);
                 };
-                merged.set(new.clone(), value);
                 renamed.insert(name.clone(), new);
+                more = true;
             }
+        }
+        if !more {
+            break;
+        }
+    }
+    for (name, value) in entries {
+        let value = rename(&value, &renamed).unwrap_or(value);
+        let key = renamed.get(&name).cloned().unwrap_or(name);
+        if !merged.contains(&key) {
+            merged.set(key, value);
         }
     }
     renamed

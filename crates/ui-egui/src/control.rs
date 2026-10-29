@@ -253,9 +253,13 @@ pub(crate) trait Host {
     /// Request application exit; returns whether it closed without asking for confirmation.
     fn quit(&mut self, ctx: &egui::Context) -> bool;
     /// Run automation tool `name` on the window's documents (`tool.call`).
-    fn tool(&mut self, name: &str, args: &Value, root: Option<&str>) -> Reply;
+    fn tool(&mut self, _name: &str, _args: &Value, _root: Option<&str>) -> Reply {
+        Err("tool.call: not available in this host".into())
+    }
     /// Whether a private signing or password view is open: nothing of the window is shown then.
-    fn private_dialog(&self) -> bool;
+    fn private_dialog(&self) -> bool {
+        false
+    }
 
     /// A generation that changes when the input target (document, dialog, focus) does.
     ///

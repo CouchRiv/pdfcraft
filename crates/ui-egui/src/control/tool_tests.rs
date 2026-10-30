@@ -67,6 +67,8 @@ fn control_tool_call_keeps_uncommitted_typing() {
         text: "Uncommitted".into(),
         style: crate::content_ui::default_style(),
         focus: false,
+        selection: None,
+        typing_from: None,
     });
     let e = app.tool("doc_save", &json!({"doc":1}), None).unwrap_err();
     assert!(e.contains("draft has been kept"), "{e}");

@@ -410,6 +410,12 @@ impl Document {
         self.editor.as_ref().and_then(|e| e.redo.last()).map(|(l, ..)| l)
     }
 
+    /// How many Undo steps the document holds: one per edit applied, so a tool that applies
+    /// several (a batch) is counted once per step.
+    pub fn undo_depth(&self) -> usize {
+        self.editor.as_ref().map_or(0, |e| e.undo.len())
+    }
+
     pub fn editable(&self) -> bool {
         self.editor.is_some()
     }

@@ -2158,6 +2158,30 @@ fn ask_agent_bubble_flow_keep_undo_followup() {
 }
 
 #[test]
+fn ask_agent_counts_every_step_of_a_batch() {
+    let (mut h, c) = harness();
+    let hub = c.agent_hub();
+    let _ = hub.listen(60, Some("worker"), std::time::Duration::ZERO, || true);
+    ok(&mut h, &c, "ui.set", json!({"key":"select","value":"1"}));
+    ok(&mut h, &c, "ui.askAgent", json!({}));
+    let sent = ok(&mut h, &c, "ui.askAgent", json!({"instruction":"Add two pages"}));
+    let id = sent["id"].as_u64().unwrap();
+    hub.listen(60, None, std::time::Duration::ZERO, || true).unwrap();
+
+    // A batch applies one edit per step: each one is counted, so Keep groups them all and Undo
+    // takes them all back, instead of the single tool call counting as one edit.
+    h.state_mut().tool_runner = Some(Box::new(|session, _name, _args, _root| {
+        let doc = session.docs()[0].id;
+        for page in [0, 1] {
+            session.apply(doc, pdfcraft_engine::Edit::RotatePages { pages: vec![page], degrees: 90 }).map_err(|e| e.to_string())?;
+        }
+        Ok(json!({"steps": 2}))
+    }));
+    ok(&mut h, &c, "tool.call", json!({"name":"command_batch","arguments":{"steps":[]},"requestId":id,"__askConnection":true,"__agentOwner":60}));
+    assert_eq!(ok(&mut h, &c, "ui.state", json!({}))["askAgent"]["edits"], 2);
+}
+
+#[test]
 fn page_size_shows_while_the_pointer_is_in_the_bottom_left_quadrant() {
     let (mut h, _c) = harness();
     let area = h.state().views[0].viewport_rect();

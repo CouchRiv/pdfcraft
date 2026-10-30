@@ -84,11 +84,22 @@ impl AskAgent {
 
     /// Record an edit made on behalf of request_id.
     pub fn record_edit(&mut self, request_id: u64) {
+        self.record_edits(request_id, 1);
+    }
+
+    /// Record `count` edits made on behalf of request_id: one per Undo step they created, so a
+    /// batch of steps is counted step by step rather than as one tool call.
+    pub fn record_edits(&mut self, request_id: u64, count: usize) {
         if let Some(open) = &mut self.open
             && open.id == request_id
         {
-            open.edits_count += 1;
+            open.edits_count += count;
         }
+    }
+
+    /// The document the open bubble for `request_id` works on.
+    pub fn open_doc(&self, request_id: u64) -> Option<pdfcraft_engine::DocId> {
+        self.open.as_ref().filter(|o| o.id == request_id).map(|o| o.doc_id)
     }
 
     /// Inspect current Ask Agent state for ui.inspect.
@@ -97,6 +108,7 @@ impl AskAgent {
             "bubbleOpen": self.open.is_some(),
             "agents": self.hub.agents(),
             "currentId": self.open.as_ref().map(|o| o.id),
+            "edits": self.open.as_ref().map_or(0, |o| o.edits_count),
         })
     }
 }

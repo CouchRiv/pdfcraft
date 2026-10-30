@@ -8121,6 +8121,22 @@ fn group_undo_collapses_multiple_edits_into_one_step() {
     assert!(session.get(id).unwrap().can_undo().is_none());
 }
 
+#[test]
+fn undo_depth_counts_one_step_per_edit() {
+    let mut session = Session::new();
+    let bytes = session.create_blank(200.0, 300.0, 2).unwrap();
+    let id = session.open("undo-depth.pdf", None, bytes, None).unwrap();
+    assert_eq!(session.get(id).unwrap().undo_depth(), 0);
+    session.apply(id, Edit::RotatePages { pages: vec![0], degrees: 90 }).unwrap();
+    assert_eq!(session.get(id).unwrap().undo_depth(), 1);
+    session.apply(id, Edit::RotatePages { pages: vec![1], degrees: 90 }).unwrap();
+    assert_eq!(session.get(id).unwrap().undo_depth(), 2);
+    session.group_undo(id, 2, Label::of("Ask Agent")).unwrap();
+    assert_eq!(session.get(id).unwrap().undo_depth(), 1, "the two steps are one now");
+    session.undo(id).unwrap();
+    assert_eq!(session.get(id).unwrap().undo_depth(), 0);
+}
+
 /// `fixture(2)` with the catalog pointing at a page tree object the file does not have (#1656).
 fn fixture_without_page_tree() -> Vec<u8> {
     let bytes = fixture(2);
